@@ -318,7 +318,7 @@ class ModuleRenderTestCase(SharedModuleStoreTestCase, LoginEnrollmentTestCase):
             'xblock_handler',
             args=[
                 str(self.course_key),
-                quote_slashes(str(self.course_key.make_usage_key('videosequence', 'Toy_Videos'))),
+                quote_slashes(str(self.course_key.make_usage_key('sequential', 'Toy_Videos'))),
                 'xmodule_handler',
                 'goto_position'
             ]
@@ -1341,7 +1341,7 @@ class TestProctoringRendering(SharedModuleStoreTestCase):
         Helper method to consolidate some courseware/proctoring/credit
         test harness data
         """
-        usage_key = self.course_key.make_usage_key('videosequence', 'Toy_Videos')
+        usage_key = self.course_key.make_usage_key('sequential', 'Toy_Videos')
         sequence = self.modulestore.get_item(usage_key)
 
         sequence.is_time_limited = True
