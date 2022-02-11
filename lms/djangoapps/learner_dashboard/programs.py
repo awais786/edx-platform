@@ -147,7 +147,15 @@ class ProgramDetailsFragmentView(EdxFragmentView):
         }
         program_discussion_lti = ProgramDiscussionLTI(program_uuid, request)
         program_live_lti = ProgramLiveLTI(program_uuid, request)
-        discussion_or_live_configured = program_discussion_lti.is_configured or program_live_lti.is_configured
+
+        def program_tab_view_enabled() -> bool:
+            return program_tab_view_is_enabled() and (
+                program_discussion_lti.is_configured or
+                program_live_lti.is_configured or
+                industry_pathways or
+                credit_pathways
+            )
+
         context = {
             'urls': urls,
             'user_preferences': get_user_preferences(user),
@@ -156,7 +164,7 @@ class ProgramDetailsFragmentView(EdxFragmentView):
             'certificate_data': certificate_data,
             'industry_pathways': industry_pathways,
             'credit_pathways': credit_pathways,
-            'program_tab_view_enabled': program_tab_view_is_enabled() and discussion_or_live_configured,
+            'program_tab_view_enabled': program_tab_view_enabled(),
             'discussion_fragment': {
                 'configured': program_discussion_lti.is_configured,
                 'iframe': program_discussion_lti.render_iframe()
