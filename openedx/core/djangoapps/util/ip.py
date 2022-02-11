@@ -20,7 +20,6 @@ from django.conf import settings
 # .. setting_warnings: This must be set in coordination with CLIENT_IP_REQUEST_META_INDEX and with awareness of what
 #   proxies are in front of edxapp. Using element 0 of XFF is disrecommended because it will allow malicious callers
 #   to spoof their IP address.
-CLIENT_IP_REQUEST_META_FIELD = getattr(settings, 'CLIENT_IP_REQUEST_META_FIELD', 'HTTP_X_FORWARDED_FOR')
 
 # .. setting_name: CLIENT_IP_REQUEST_META_INDEX
 # .. setting_default: -1
@@ -29,7 +28,6 @@ CLIENT_IP_REQUEST_META_FIELD = getattr(settings, 'CLIENT_IP_REQUEST_META_FIELD',
 #   for more details.
 # .. setting_warnings: This must be set in coordination with CLIENT_IP_REQUEST_META_FIELD -- both should be
 #   overridden together, or neither.
-CLIENT_IP_REQUEST_META_INDEX = getattr(settings, 'CLIENT_IP_REQUEST_META_INDEX', -1)
 
 
 def get_client_ip(request):
@@ -40,14 +38,17 @@ def get_client_ip(request):
     REMOTE_ADDR, which should always be present (though not necessarily
     *correct*.)
     """
-    raw_value = request.META.get(CLIENT_IP_REQUEST_META_FIELD) or ''
+    field = getattr(settings, 'CLIENT_IP_REQUEST_META_FIELD', 'HTTP_X_FORWARDED_FOR')
+    index = getattr(settings, 'CLIENT_IP_REQUEST_META_INDEX', -1)
+
+    raw_value = request.META.get(field) or ''
     parts = [s.strip() for s in raw_value.split(',')]
     try:
-        found = parts[CLIENT_IP_REQUEST_META_INDEX]
+        found = parts[index]
     except IndexError:
         warnings.warn(
             "Configured index into client IP address field is out of range: "
-            f"{CLIENT_IP_REQUEST_META_FIELD}[{CLIENT_IP_REQUEST_META_INDEX}] "
+            f"{field}[{index}] "
             f"(actual length {len(parts)})",
             UserWarning
         )
@@ -57,6 +58,7 @@ def get_client_ip(request):
             warnings.warn("Client IP address settings did not find an IP", UserWarning)
 
     if not found:
+        # This is the only possible fallback we can rely on existing.
         return request.META['REMOTE_ADDR']
     else:
         return found
