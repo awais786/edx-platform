@@ -44,7 +44,7 @@ def get_client_ip(request):
     raw_value = request.META.get(field) or ''
     parts = [s.strip() for s in raw_value.split(',')]
     try:
-        found = parts[index]
+        client_ip = parts[index]
     except IndexError:
         warnings.warn(
             "Configured index into client IP address field is out of range: "
@@ -52,13 +52,10 @@ def get_client_ip(request):
             f"(actual length {len(parts)})",
             UserWarning
         )
-        found = None
+        client_ip = None
     else:
-        if not found:
+        if not client_ip:
             warnings.warn("Client IP address settings did not find an IP", UserWarning)
 
-    if not found:
-        # This is the only possible fallback we can rely on existing.
-        return request.META['REMOTE_ADDR']
-    else:
-        return found
+    # This is the only possible fallback we can rely on existing.
+    return client_ip or request.META['REMOTE_ADDR']

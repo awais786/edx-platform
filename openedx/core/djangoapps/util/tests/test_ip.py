@@ -31,6 +31,8 @@ class TestClientIP(TestCase):
         # Fall back to REMOTE_ADDR when field or index is invalid
         ('HTTP_X_FORWARDED_FOR', -1, {}, '127.0.0.2', True),
         ('HTTP_X_FORWARDED_FOR', 33, {'HTTP_X_FORWARDED_FOR': '4.3.2.1'}, '127.0.0.2', True),
+        # Can use arbitrary header or other field
+        ('BLAH', -1, {'HTTP_X_FORWARDED_FOR': '4.3.2.1', 'BLAH': '5.6.7.8'}, '5.6.7.8', False),
     )
     def test_request_with_latin1_characters(
             self, cnf_field, cnf_index, request_meta, expected_answer, expected_warning
