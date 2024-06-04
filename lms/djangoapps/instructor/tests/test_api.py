@@ -419,7 +419,7 @@ class TestInstructorAPIDenyLevels(SharedModuleStoreTestCase, LoginEnrollmentTest
             ('get_grading_config', {}),
             ('get_students_features', {}),
             ('get_student_progress_url', {'unique_student_identifier': self.user.username}),
-            ('get_student_progress_url_v2   ', {'unique_student_identifier': self.user.username}),
+            ('get_student_progress_url_v2', {'unique_student_identifier': self.user.username}),
             ('update_forum_role_membership',
              {'unique_student_identifier': self.user.email, 'rolename': 'Moderator', 'action': 'allow'}),
             ('list_forum_members', {'rolename': FORUM_ROLE_COMMUNITY_TA}),
