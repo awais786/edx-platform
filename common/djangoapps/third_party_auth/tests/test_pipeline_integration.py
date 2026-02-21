@@ -3,10 +3,10 @@
 
 import datetime
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 import ddt
 import pytest
-import pytz
 from django import test
 from django.contrib.auth import models, REDIRECT_FIELD_NAME
 from django.core import mail
@@ -176,7 +176,7 @@ class UrlFormationTestCase(TestCase):
     def test_disconnect_url_returns_expected_format(self):
         disconnect_url = pipeline.get_disconnect_url(self.enabled_provider.provider_id, 1000)
         disconnect_url = disconnect_url.rstrip('?')
-        assert disconnect_url == '/auth/disconnect/{backend}/{association_id}/'\
+        assert disconnect_url == '/auth/disconnect_json/{backend}/{association_id}/'\
             .format(backend=self.enabled_provider.backend_name, association_id=1000)
 
     def test_login_url_raises_value_error_if_provider_not_enabled(self):
@@ -562,7 +562,7 @@ class SetIDVerificationStatusTestCase(TestCase):
         )
 
         with mock.patch('common.djangoapps.third_party_auth.pipeline.earliest_allowed_verification_date') as earliest_date:  # lint-amnesty, pylint: disable=line-too-long
-            earliest_date.return_value = datetime.datetime.now(pytz.UTC) + datetime.timedelta(days=1)
+            earliest_date.return_value = datetime.datetime.now(ZoneInfo("UTC")) + datetime.timedelta(days=1)
             # Begin the pipeline.
             pipeline.set_id_verification_status(
                 auth_entry=pipeline.AUTH_ENTRY_LOGIN,
@@ -583,7 +583,7 @@ class SetIDVerificationStatusTestCase(TestCase):
         """
         Verification signal is sent upon approval.
         """
-        with mock.patch('openedx.core.djangoapps.signals.signals.LEARNER_NOW_VERIFIED.send_robust') as mock_signal:
+        with mock.patch('openedx.core.djangoapps.signals.signals.LEARNER_SSO_VERIFIED.send_robust') as mock_signal:
             # Begin the pipeline.
             pipeline.set_id_verification_status(
                 auth_entry=pipeline.AUTH_ENTRY_LOGIN,

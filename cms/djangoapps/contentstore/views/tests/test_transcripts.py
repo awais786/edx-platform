@@ -15,20 +15,24 @@ from django.test.utils import override_settings
 from django.urls import reverse
 from edxval.api import create_video
 from opaque_keys.edx.keys import UsageKey
+from organizations.tests.factories import OrganizationFactory
 
 from cms.djangoapps.contentstore.tests.utils import CourseTestCase, setup_caption_responses
 from openedx.core.djangoapps.contentserver.caching import del_cached_content
+from openedx.core.djangoapps.content_libraries import api as lib_api
 from xmodule.contentstore.content import StaticContent  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.contentstore.django import contentstore  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.exceptions import NotFoundError  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.modulestore.django import modulestore  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.video_block import VideoBlock  # lint-amnesty, pylint: disable=wrong-import-order
-from xmodule.video_block.transcripts_utils import (  # lint-amnesty, pylint: disable=wrong-import-order
+from openedx.core.djangoapps.video_config.transcripts_utils import (  # lint-amnesty, pylint: disable=wrong-import-order
     GetTranscriptsFromYouTubeException,
     Transcript,
     get_video_transcript_content,
-    remove_subs_from_store
+    get_transcript,
+    remove_subs_from_store,
 )
+from openedx.core.djangoapps.xblock import api as xblock_api
 
 TEST_DATA_CONTENTSTORE = copy.deepcopy(settings.CONTENTSTORE)
 TEST_DATA_CONTENTSTORE['DOC_STORE_CONFIG']['db'] = 'test_xcontent_%s' % uuid4().hex
@@ -91,6 +95,21 @@ class BaseTranscripts(CourseTestCase):
         }
         resp = self.client.ajax_post('/xblock/', data)
         self.assertEqual(resp.status_code, 200)
+
+        self.library = lib_api.create_library(
+            org=OrganizationFactory.create(short_name="org1"),
+            slug="lib",
+            title="Library",
+        )
+        self.library_block_metadata = lib_api.create_library_block(
+            self.library.key,
+            "video",
+            "video-transcript",
+        )
+        self.library_block = xblock_api.load_block(
+            self.library_block_metadata.usage_key,
+            self.user,
+        )
 
         self.video_usage_key = self._get_usage_key(resp)
         self.item = modulestore().get_item(self.video_usage_key)
@@ -702,6 +721,25 @@ class TestReplaceTranscripts(BaseTranscripts):
         expected_sjson_content = json.loads(SJSON_TRANSCRIPT_CONTENT)
         self.assertDictEqual(actual_sjson_content, expected_sjson_content)
 
+    def test_replace_transcript_library_content_success(self):
+        # Make call to replace transcripts from youtube
+        response = self.replace_transcript(self.library_block_metadata.usage_key, self.youtube_id)
+
+        # Verify the response
+        self.assert_response(response, expected_status_code=200, expected_message='Success')
+
+        # Obtain updated block
+        updated_block = xblock_api.load_block(
+            self.library_block_metadata.usage_key,
+            self.user,
+        )
+
+        # Verify transcript content
+        transcript = get_transcript(updated_block, 'en', Transcript.SJSON)
+        actual_sjson_content = json.loads(transcript[0])
+        expected_sjson_content = json.loads(SJSON_TRANSCRIPT_CONTENT)
+        self.assertDictEqual(actual_sjson_content, expected_sjson_content)
+
     def test_replace_transcript_fails_without_data(self):
         """
         Verify that replace transcript fails if we do not provide video data in request.
@@ -943,7 +981,7 @@ class TestCheckTranscripts(BaseTranscripts):
             }
         )
 
-    @patch('xmodule.video_block.transcripts_utils.requests.get')
+    @patch('openedx.core.djangoapps.video_config.transcripts_utils.requests.get')
     def test_check_youtube_with_transcript_name(self, mock_get):
         """
         Test that the transcripts are fetched correctly when the the transcript name is set
@@ -1083,7 +1121,7 @@ class TestCheckTranscripts(BaseTranscripts):
             'Transcripts are supported only for "video" blocks.',
         )
 
-    @patch('xmodule.video_block.transcripts_utils.get_video_transcript_content')
+    @patch('openedx.core.djangoapps.video_config.transcripts_utils.get_video_transcript_content')
     def test_command_for_fallback_transcript(self, mock_get_video_transcript_content):
         """
         Verify the command if a transcript is there in edx-val.

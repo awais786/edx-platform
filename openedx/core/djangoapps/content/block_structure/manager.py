@@ -6,6 +6,8 @@ BlockStructures.
 
 from contextlib import contextmanager
 
+from xmodule.modulestore import ModuleStoreEnum
+
 from .exceptions import BlockStructureNotFound, TransformerDataIncompatible, UsageKeyNotInBlockStructure
 from .factory import BlockStructureFactory
 from .store import BlockStructureStore
@@ -35,7 +37,7 @@ class BlockStructureManager:
         self.modulestore = modulestore
         self.store = BlockStructureStore(cache)
 
-    def get_transformed(self, transformers, starting_block_usage_key=None, collected_block_structure=None):
+    def get_transformed(self, transformers, starting_block_usage_key=None, collected_block_structure=None, user=None):
         """
         Returns the transformed Block Structure for the root_block_usage_key,
         starting at starting_block_usage_key, getting block data from the cache
@@ -57,11 +59,14 @@ class BlockStructureManager:
                 get_collected.  Can be optionally provided if already available,
                 for optimization.
 
+            user (django.contrib.auth.models.User) - User object for
+                which the block structure is to be transformed.
+
         Returns:
             BlockStructureBlockData - A transformed block structure,
                 starting at starting_block_usage_key.
         """
-        block_structure = collected_block_structure.copy() if collected_block_structure else self.get_collected()
+        block_structure = collected_block_structure.copy() if collected_block_structure else self.get_collected(user)
 
         if starting_block_usage_key:
             # Override the root_block_usage_key so traversals start at the
@@ -77,7 +82,7 @@ class BlockStructureManager:
         transformers.transform(block_structure)
         return block_structure
 
-    def get_collected(self):
+    def get_collected(self, user=None):
         """
         Returns the collected Block Structure for the root_block_usage_key,
         getting block data from the cache and modulestore, as needed.
@@ -85,6 +90,10 @@ class BlockStructureManager:
         Details: The cache is updated if needed (if outdated or empty),
         the modulestore is accessed if needed (at cache miss), and the
         transformers data is collected if needed.
+
+        In the case of a cache miss, the function bypasses runtime access checks for the current
+        user. This is done to prevent inconsistencies in the data, which can occur when
+        certain blocks are inaccessible due to access restrictions.
 
         Returns:
             BlockStructureBlockData - A collected block structure,
@@ -97,9 +106,16 @@ class BlockStructureManager:
                 self.store,
             )
             BlockStructureTransformers.verify_versions(block_structure)
-
         except (BlockStructureNotFound, TransformerDataIncompatible):
-            block_structure = self._update_collected()
+            if user and getattr(user, "known", True):
+                # This bypasses the runtime access checks. When we are populating the course blocks cache,
+                # we do not want to perform access checks. Access checks result in inconsistent blocks where
+                # inaccessible blocks are missing from the cache. Cached course blocks are then used for all the users.
+                user.known = False
+                block_structure = self._update_collected()
+                user.known = True
+            else:
+                block_structure = self._update_collected()
 
         return block_structure
 
@@ -118,10 +134,16 @@ class BlockStructureManager:
         the modulestore.
         """
         with self._bulk_operations():
-            block_structure = BlockStructureFactory.create_from_modulestore(
-                self.root_block_usage_key,
-                self.modulestore,
-            )
+            # Always uses published-only branch regardless of CMS or LMS context.
+            with self.modulestore.branch_setting(
+                ModuleStoreEnum.Branch.published_only,
+                self.root_block_usage_key.course_key
+            ):
+                block_structure = BlockStructureFactory.create_from_modulestore(
+                    self.root_block_usage_key,
+                    self.modulestore,
+                )
+
             BlockStructureTransformers.collect(block_structure)
             self.store.add(block_structure)
             return block_structure

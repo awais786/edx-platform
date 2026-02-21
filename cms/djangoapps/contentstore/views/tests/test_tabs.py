@@ -4,7 +4,6 @@
 import json
 import random
 
-
 from cms.djangoapps.contentstore.tests.utils import CourseTestCase
 from cms.djangoapps.contentstore.utils import reverse_course_url
 from cms.djangoapps.contentstore.views import tabs
@@ -70,7 +69,7 @@ class TabsPageTests(CourseTestCase):
         """Basic check that the Pages page responds correctly"""
 
         resp = self.client.get_html(self.url)
-        self.assertContains(resp, 'course-nav-list')
+        assert resp.status_code == 302
 
     def test_reorder_tabs(self):
         """Test re-ordering of tabs"""

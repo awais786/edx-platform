@@ -12,6 +12,7 @@ from django.http import Http404
 from django.test import TestCase
 from django.test.client import RequestFactory
 from django.urls import reverse
+from django.test.utils import override_settings
 from openedx.core.djangoapps.video_config.toggles import PUBLIC_VIDEO_SHARE
 from openedx_events.content_authoring.data import DuplicatedXBlockData
 from openedx_events.content_authoring.signals import XBLOCK_DUPLICATED
@@ -21,8 +22,8 @@ from opaque_keys import InvalidKeyError
 from opaque_keys.edx.asides import AsideUsageKeyV2
 from opaque_keys.edx.keys import CourseKey, UsageKey
 from opaque_keys.edx.locator import BlockUsageLocator, CourseLocator
-from pyquery import PyQuery
 from pytz import UTC
+from bs4 import BeautifulSoup
 from web_fragments.fragment import Fragment
 from webob import Response
 from xblock.core import XBlockAside
@@ -31,7 +32,6 @@ from xblock.fields import Scope, ScopeIds, String
 from xblock.runtime import DictKeyValueStore, KvsFieldData
 from xblock.test.tools import TestRuntime
 from xblock.validation import ValidationMessage
-from xmodule.capa_block import ProblemBlock
 from xmodule.course_block import DEFAULT_START_DATE
 from xmodule.modulestore import ModuleStoreEnum
 from xmodule.modulestore.django import modulestore
@@ -74,7 +74,7 @@ from lms.djangoapps.lms_xblock.mixin import NONSENSICAL_ACCESS_RESTRICTION
 from openedx.core.djangoapps.discussions.models import DiscussionsConfiguration
 from openedx.core.djangoapps.content_tagging import api as tagging_api
 
-from ..component import component_handler, get_component_templates
+from ..component import component_handler, DEFAULT_ADVANCED_MODULES, get_component_templates
 from cms.djangoapps.contentstore.xblock_storage_handlers.view_handlers import (
     ALWAYS,
     VisibilityState,
@@ -84,6 +84,7 @@ from cms.djangoapps.contentstore.xblock_storage_handlers.view_handlers import (
     add_container_page_publishing_info,
     create_xblock_info,
 )
+from common.test.utils import assert_dict_contains_subset
 
 
 class AsideTest(XBlockAside):
@@ -225,7 +226,6 @@ class GetItemTest(ItemTest):
         resp = self.create_xblock(
             parent_usage_key=child_vertical_usage_key,
             category="problem",
-            boilerplate="multiplechoice.yaml",
         )
         self.assertEqual(resp.status_code, 200)
 
@@ -254,7 +254,6 @@ class GetItemTest(ItemTest):
         resp = self.create_xblock(
             parent_usage_key=wrapper_usage_key,
             category="problem",
-            boilerplate="multiplechoice.yaml",
         )
         self.assertEqual(resp.status_code, 200)
 
@@ -265,9 +264,10 @@ class GetItemTest(ItemTest):
             html,
             # The instance of the wrapper class will have an auto-generated ID. Allow any
             # characters after wrapper.
-            '"/container/{}" class="action-button">\\s*<span class="action-button-text">View</span>'.format(
-                re.escape(str(wrapper_usage_key))
-            ),
+            (
+                '"/container/{}" class="action-button xblock-view-action-button">'
+                '\\s*<span class="action-button-text">View</span>'
+            ).format(re.escape(str(wrapper_usage_key))),
         )
 
     @patch("cms.djangoapps.contentstore.xblock_storage_handlers.xblock_helpers.get_object_tag_counts")
@@ -281,7 +281,6 @@ class GetItemTest(ItemTest):
         resp = self.create_xblock(
             parent_usage_key=child_vertical_usage_key,
             category="problem",
-            boilerplate="multiplechoice.yaml",
         )
         self.assertEqual(resp.status_code, 200)
         usage_key = self.response_usage_key(resp)
@@ -306,18 +305,13 @@ class GetItemTest(ItemTest):
         resp = self.create_xblock(
             parent_usage_key=split_test_usage_key,
             category="html",
-            boilerplate="announcement.yaml",
         )
         self.assertEqual(resp.status_code, 200)
         resp = self.create_xblock(
             parent_usage_key=split_test_usage_key,
             category="html",
-            boilerplate="zooming_image.yaml",
         )
         self.assertEqual(resp.status_code, 200)
-        html, __ = self._get_container_preview(split_test_usage_key)
-        self.assertIn("Announcement", html)
-        self.assertIn("Zooming", html)
 
     def test_split_test_edited(self):
         """
@@ -521,6 +515,7 @@ class GetItemTest(ItemTest):
         problem1 = self.create_xblock(
             parent_usage_key=vert_usage_key, display_name="problem1", category="problem"
         )
+        print(problem1)
         problem_usage_key = self.response_usage_key(problem1)
 
         def assert_xblock_info(xblock, xblock_info):
@@ -556,7 +551,8 @@ class GetItemTest(ItemTest):
                     xblock = parent_xblock
             else:
                 self.assertNotIn("ancestors", response)
-                self.assertEqual(get_block_info(xblock), response)
+                xblock_info = get_block_info(xblock)
+                self.assertEqual(xblock_info, response)
 
 
 @ddt.ddt
@@ -601,31 +597,12 @@ class TestCreateItem(ItemTest):
         course = self.get_item_from_modulestore(self.usage_key)
         self.assertIn(chap_usage_key, course.children)
 
-        # use default display name
-        resp = self.create_xblock(parent_usage_key=chap_usage_key, category="vertical")
-        vert_usage_key = self.response_usage_key(resp)
-
-        # create problem w/ boilerplate
-        template_id = "multiplechoice.yaml"
-        resp = self.create_xblock(
-            parent_usage_key=vert_usage_key, category="problem", boilerplate=template_id
-        )
-        prob_usage_key = self.response_usage_key(resp)
-        problem = self.get_item_from_modulestore(prob_usage_key)
-        # check against the template
-        template = ProblemBlock.get_template(template_id)
-        self.assertEqual(problem.data, template["data"])
-        self.assertEqual(problem.display_name, template["metadata"]["display_name"])
-        self.assertEqual(problem.markdown, template["metadata"]["markdown"])
-
     def test_create_block_negative(self):
         """
         Negative tests for create_item
         """
         # non-existent boilerplate: creates a default
-        resp = self.create_xblock(
-            category="problem", boilerplate="nosuchboilerplate.yaml"
-        )
+        resp = self.create_xblock(category="problem")
         self.assertEqual(resp.status_code, 200)
 
     def test_create_with_future_date(self):
@@ -798,6 +775,12 @@ class TestDuplicateItem(ItemTest, DuplicateHelper, OpenEdxEventsTestMixin):
         super().setUpClass()
         cls.start_events_isolation()
 
+    @classmethod
+    def tearDownClass(cls):
+        """ Don't let our event isolation affect other test cases """
+        super().tearDownClass()
+        cls.enable_all_events()  # Re-enable events other than the ENABLED_OPENEDX_EVENTS subset we isolated.
+
     def setUp(self):
         """Creates the test course structure and a few components to 'duplicate'."""
         super().setUp()
@@ -821,7 +804,6 @@ class TestDuplicateItem(ItemTest, DuplicateHelper, OpenEdxEventsTestMixin):
         resp = self.create_xblock(
             parent_usage_key=self.vert_usage_key,
             category="problem",
-            boilerplate="multiplechoice.yaml",
         )
         self.problem_usage_key = self.response_usage_key(resp)
 
@@ -850,7 +832,8 @@ class TestDuplicateItem(ItemTest, DuplicateHelper, OpenEdxEventsTestMixin):
         XBLOCK_DUPLICATED.connect(event_receiver)
         usage_key = self._duplicate_and_verify(self.vert_usage_key, self.seq_usage_key)
         event_receiver.assert_called()
-        self.assertDictContainsSubset(
+        assert_dict_contains_subset(
+            self,
             {
                 "signal": XBLOCK_DUPLICATED,
                 "sender": None,
@@ -920,19 +903,6 @@ class TestDuplicateItem(ItemTest, DuplicateHelper, OpenEdxEventsTestMixin):
             self.assertEqual(duplicated_item.display_name, expected_name)
             return usage_key
 
-        # Display name comes from template.
-        dupe_usage_key = verify_name(
-            self.problem_usage_key,
-            self.vert_usage_key,
-            "Duplicate of 'Multiple Choice'",
-        )
-        # Test dupe of dupe.
-        verify_name(
-            dupe_usage_key,
-            self.vert_usage_key,
-            "Duplicate of 'Duplicate of 'Multiple Choice''",
-        )
-
         # Uses default display_name of 'Text' from HTML component.
         verify_name(self.html_usage_key, self.vert_usage_key, "Duplicate of 'Text'")
 
@@ -977,7 +947,7 @@ class TestDuplicateItem(ItemTest, DuplicateHelper, OpenEdxEventsTestMixin):
 
     def test_duplicate_library_content_block(self):  # pylint: disable=too-many-statements
         """
-        Test the LibraryContentBlock's special duplication process.
+        Test the LegacyLibraryContentBlock's special duplication process.
         """
         store = modulestore()
 
@@ -1831,7 +1801,6 @@ class TestDuplicateItemWithAsides(ItemTest, DuplicateHelper):
         resp = self.create_xblock(
             parent_usage_key=self.seq_usage_key,
             category="problem",
-            boilerplate="multiplechoice.yaml",
         )
         self.problem_usage_key = self.response_usage_key(resp)
 
@@ -1840,7 +1809,7 @@ class TestDuplicateItemWithAsides(ItemTest, DuplicateHelper):
 
     @XBlockAside.register_temp_plugin(AsideTest, "test_aside")
     @patch(
-        "xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types",
+        "xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types",
         lambda self, block: ["test_aside"],
     )
     def test_duplicate_equality_with_asides(self):
@@ -1914,11 +1883,9 @@ class TestEditItemSetup(ItemTest):
         self.seq2_update_url = reverse_usage_url("xblock_handler", self.seq2_usage_key)
 
         # create problem w/ boilerplate
-        template_id = "multiplechoice.yaml"
         resp = self.create_xblock(
             parent_usage_key=self.seq_usage_key,
             category="problem",
-            boilerplate=template_id,
         )
         self.problem_usage_key = self.response_usage_key(resp)
         self.problem_update_url = reverse_usage_url(
@@ -1948,19 +1915,6 @@ class TestEditItem(TestEditItemSetup):
         )
         problem = self.get_item_from_modulestore(self.problem_usage_key)
         self.assertEqual(problem.rerandomize, 'never')
-
-    def test_null_field(self):
-        """
-        Sending null in for a field 'deletes' it
-        """
-        problem = self.get_item_from_modulestore(self.problem_usage_key)
-        self.assertIsNotNone(problem.markdown)
-        self.client.ajax_post(
-            self.problem_update_url,
-            data={'nullout': ['markdown']}
-        )
-        problem = self.get_item_from_modulestore(self.problem_usage_key)
-        self.assertIsNone(problem.markdown)
 
     def test_date_fields(self):
         """
@@ -2411,28 +2365,6 @@ class TestEditItem(TestEditItemSetup):
         )  # See xmodule/fields.py
 
 
-class TestEditItemSplitMongo(TestEditItemSetup):
-    """
-    Tests for EditItem running on top of the SplitMongoModuleStore.
-    """
-
-    def test_editing_view_wrappers(self):
-        """
-        Verify that the editing view only generates a single wrapper, no matter how many times it's loaded
-
-        Exposes: PLAT-417
-        """
-        view_url = reverse_usage_url(
-            "xblock_view_handler", self.problem_usage_key, {"view_name": STUDIO_VIEW}
-        )
-
-        for __ in range(3):
-            resp = self.client.get(view_url, HTTP_ACCEPT="application/json")
-            self.assertEqual(resp.status_code, 200)
-            content = json.loads(resp.content.decode("utf-8"))
-            self.assertEqual(len(PyQuery(content["html"])(f".xblock-{STUDIO_VIEW}")), 1)
-
-
 class TestEditSplitModule(ItemTest):
     """
     Tests around editing instances of the split_test block.
@@ -2685,8 +2617,8 @@ class TestEditSplitModule(ItemTest):
         group_id_to_child = split_test.group_id_to_child.copy()
         self.assertEqual(2, len(group_id_to_child))
 
-        # CachingDescriptorSystem is used in tests.
-        # CachingDescriptorSystem doesn't have user service, that's needed for
+        # SplitModuleStoreRuntime is used in tests.
+        # SplitModuleStoreRuntime doesn't have user service, that's needed for
         # SplitTestBlock. So, in this line of code we add this service manually.
         split_test.runtime._services["user"] = DjangoXBlockUserService(  # pylint: disable=protected-access
             self.user
@@ -2896,6 +2828,16 @@ class TestComponentTemplates(CourseTestCase):
 
         self.templates = get_component_templates(self.course)
 
+        self.default_advanced_modules_titles = sorted([
+            "Google Calendar",
+            "Google Document",
+            "LTI Consumer",
+            "Poll",
+            "Content Experiment",
+            "Survey",
+            "Word cloud",
+        ])
+
     def get_templates_of_type(self, template_type):
         """
         Returns the templates for the specified type, or None if none is found.
@@ -2949,7 +2891,11 @@ class TestComponentTemplates(CourseTestCase):
         self.assertGreater(len(self.get_templates_of_type("library")), 0)
         self.assertGreater(len(self.get_templates_of_type("html")), 0)
         self.assertGreater(len(self.get_templates_of_type("problem")), 0)
-        self.assertIsNone(self.get_templates_of_type("advanced"))
+
+        # Check for default advanced modules
+        advanced_templates = self.get_templates_of_type("advanced")
+        advanced_module_keys = [t['category'] for t in advanced_templates]
+        self.assertCountEqual(advanced_module_keys, DEFAULT_ADVANCED_MODULES)
 
         # Now fully disable video through XBlockConfiguration
         XBlockConfiguration.objects.create(name="video", enabled=False)
@@ -2981,12 +2927,6 @@ class TestComponentTemplates(CourseTestCase):
         self.course.allow_unsupported_xblocks = True
         self.templates = get_component_templates(self.course)
         self._verify_basic_component("video", "Video", "us")
-        problem_templates = self.get_templates_of_type("problem")
-        problem_no_boilerplate = self.get_template(
-            problem_templates, "Blank Problem"
-        )
-        self.assertIsNotNone(problem_no_boilerplate)
-        self.assertEqual("us", problem_no_boilerplate["support_level"])
 
         # Now fully disable video through XBlockConfiguration
         XBlockConfiguration.objects.create(name="video", enabled=False)
@@ -2997,43 +2937,38 @@ class TestComponentTemplates(CourseTestCase):
         """
         Test the handling of advanced component templates.
         """
-        self.course.advanced_modules.append("word_cloud")
+        self.course.advanced_modules.append("done")
+        EXPECTED_ADVANCED_MODULES_LENGTH = len(DEFAULT_ADVANCED_MODULES) + 1
         self.templates = get_component_templates(self.course)
         advanced_templates = self.get_templates_of_type("advanced")
-        self.assertEqual(len(advanced_templates), 1)
-        world_cloud_template = advanced_templates[0]
-        self.assertEqual(world_cloud_template.get("category"), "word_cloud")
-        self.assertEqual(world_cloud_template.get("display_name"), "Word cloud")
-        self.assertIsNone(world_cloud_template.get("boilerplate_name", None))
+        self.assertEqual(len(advanced_templates), EXPECTED_ADVANCED_MODULES_LENGTH)
+        done_template = advanced_templates[0]
+        self.assertEqual(done_template.get("category"), "done")
+        self.assertEqual(done_template.get("display_name"), "Completion")
+        self.assertIsNone(done_template.get("boilerplate_name", None))
 
-        # Verify that non-advanced components are not added twice
+        # Verify that components are not added twice
         self.course.advanced_modules.append("video")
         self.course.advanced_modules.append("drag-and-drop-v2")
+        # Already defined advanced modules
+        self.course.advanced_modules.append("poll")
+        self.course.advanced_modules.append("google-document")
+        self.course.advanced_modules.append("survey")
+
         self.templates = get_component_templates(self.course)
         advanced_templates = self.get_templates_of_type("advanced")
-        self.assertEqual(len(advanced_templates), 1)
+        self.assertEqual(len(advanced_templates), EXPECTED_ADVANCED_MODULES_LENGTH)
         only_template = advanced_templates[0]
         self.assertNotEqual(only_template.get("category"), "video")
         self.assertNotEqual(only_template.get("category"), "drag-and-drop-v2")
+        self.assertNotEqual(only_template.get("category"), "poll")
+        self.assertNotEqual(only_template.get("category"), "google-document")
+        self.assertNotEqual(only_template.get("category"), "survey")
 
-        # Now fully disable word_cloud through XBlockConfiguration
-        XBlockConfiguration.objects.create(name="word_cloud", enabled=False)
+        # Now fully disable done through XBlockConfiguration
+        XBlockConfiguration.objects.create(name="done", enabled=False)
         self.templates = get_component_templates(self.course)
-        self.assertIsNone(self.get_templates_of_type("advanced"))
-
-    def test_advanced_problems(self):
-        """
-        Test the handling of advanced problem templates.
-        """
-        problem_templates = self.get_templates_of_type("problem")
-        circuit_template = self.get_template(
-            problem_templates, "Circuit Schematic Builder"
-        )
-        self.assertIsNotNone(circuit_template)
-        self.assertEqual(circuit_template.get("category"), "problem")
-        self.assertEqual(
-            circuit_template.get("boilerplate_name"), "circuitschematic.yaml"
-        )
+        self.assertTrue((not any(item.get("category") == "done" for item in self.get_templates_of_type("advanced"))))
 
     def test_deprecated_no_advance_component_button(self):
         """
@@ -3080,8 +3015,9 @@ class TestComponentTemplates(CourseTestCase):
         XBlockConfiguration) if XBlockStudioConfigurationFlag is False.
         """
         XBlockStudioConfigurationFlag.objects.create(enabled=False)
-        self.course.advanced_modules.extend(["annotatable", "survey"])
-        self._verify_advanced_xblocks(["Annotation", "Survey"], [True, True])
+        self.course.advanced_modules.extend(["annotatable", "done"])
+        expected_xblocks = ["Annotation", "Completion"] + self.default_advanced_modules_titles
+        self._verify_advanced_xblocks(expected_xblocks, [True] * len(expected_xblocks))
 
     def test_xblock_masquerading_as_problem(self):
         """
@@ -3179,13 +3115,13 @@ class TestComponentTemplates(CourseTestCase):
         templates = get_component_templates(self.course)
         button_names = [template["display_name"] for template in templates]
         self.assertIn("Advanced", button_names)
-        self.assertEqual(len(templates[0]["templates"]), len(expected_xblocks))
+        self.assertEqual(len(templates[-1]["templates"]), len(expected_xblocks))
         template_display_names = [
-            template["display_name"] for template in templates[0]["templates"]
+            template["display_name"] for template in templates[-1]["templates"]
         ]
         self.assertEqual(template_display_names, expected_xblocks)
         template_support_levels = [
-            template["support_level"] for template in templates[0]["templates"]
+            template["support_level"] for template in templates[-1]["templates"]
         ]
         self.assertEqual(template_support_levels, expected_support_levels)
 
@@ -3661,6 +3597,7 @@ class TestSpecialExamXBlockInfo(ItemTest):
         assert xblock_info["proctoring_exam_configuration_link"] == "test_url"
         assert xblock_info["supports_onboarding"] is True
         assert xblock_info["is_onboarding_exam"] is False
+        assert xblock_info["show_review_rules"] is True
         mock_get_exam_configuration_dashboard_url.assert_called_with(
             self.course.id, xblock_info["id"]
         )
@@ -3668,15 +3605,54 @@ class TestSpecialExamXBlockInfo(ItemTest):
     @patch_get_exam_configuration_dashboard_url
     @patch_does_backend_support_onboarding
     @patch_get_exam_by_content_id_success
+    @override_settings(
+        PROCTORING_BACKENDS={
+            "DEFAULT": "null",
+            # By default "show_review_rules" is True unless you explicitly set it to False.
+            "test_proctoring_provider": {"show_review_rules": False},
+        }
+    )
+    def test_show_review_rules_xblock_info(
+        self,
+        mock_get_exam_by_content_id,
+        _mock_does_backend_support_onboarding,
+        mock_get_exam_configuration_dashboard_url,
+    ):
+        # Set course.proctoring_provider to test_proctoring_provider
+        self.course.proctoring_provider = 'test_proctoring_provider'
+        sequential = BlockFactory.create(
+            parent_location=self.chapter.location,
+            category="sequential",
+            display_name="Test Lesson 1",
+            user_id=self.user.id,
+            is_proctored_enabled=True,
+            is_time_limited=True,
+            default_time_limit_minutes=100,
+            is_onboarding_exam=False,
+        )
+        sequential = modulestore().get_item(sequential.location)
+        xblock_info = create_xblock_info(
+            sequential,
+            include_child_info=True,
+            include_children_predicate=ALWAYS,
+            course=self.course,
+        )
+
+        assert xblock_info["show_review_rules"] is False
+
+    @patch_get_exam_configuration_dashboard_url
+    @patch_does_backend_support_onboarding
+    @patch_get_exam_by_content_id_success
     @ddt.data(
-        ("lti_external", False),
-        ("other_proctoring_backend", True),
+        ("lti_external", False, None),
+        ("other_proctoring_backend", True, "test_url"),
     )
     @ddt.unpack
-    def test_support_onboarding_is_correct_depending_on_lti_external(
+    def test_proctoring_values_correct_depending_on_lti_external(
         self,
         external_id,
-        expected_value,
+        expected_supports_onboarding_value,
+        expected_proctoring_link,
         mock_get_exam_by_content_id,
         mock_does_backend_support_onboarding,
         _mock_get_exam_configuration_dashboard_url,
@@ -3686,8 +3662,9 @@ class TestSpecialExamXBlockInfo(ItemTest):
             category="sequential",
             display_name="Test Lesson 1",
             user_id=self.user.id,
-            is_proctored_enabled=False,
-            is_time_limited=False,
+            is_proctored_enabled=True,
+            is_time_limited=True,
+            default_time_limit_minutes=100,
             is_onboarding_exam=False,
         )
 
@@ -3704,7 +3681,8 @@ class TestSpecialExamXBlockInfo(ItemTest):
             include_children_predicate=ALWAYS,
             course=self.course,
         )
-        assert xblock_info["supports_onboarding"] is expected_value
+        assert xblock_info["supports_onboarding"] is expected_supports_onboarding_value
+        assert xblock_info["proctoring_exam_configuration_link"] == expected_proctoring_link
 
     @patch_get_exam_configuration_dashboard_url
     @patch_does_backend_support_onboarding
@@ -3714,7 +3692,7 @@ class TestSpecialExamXBlockInfo(ItemTest):
         (None, False),
     )
     @ddt.unpack
-    def test_xblock_was_ever_proctortrack_proctored_exam(
+    def test_xblock_was_ever_linked_to_external_exam(
         self,
         external_id,
         expected_value,
@@ -3744,7 +3722,7 @@ class TestSpecialExamXBlockInfo(ItemTest):
     @patch_get_exam_configuration_dashboard_url
     @patch_does_backend_support_onboarding
     @patch_get_exam_by_content_id_not_found
-    def test_xblock_was_never_proctortrack_proctored_exam(
+    def test_xblock_was_never_linked_to_external_exam(
         self,
         mock_get_exam_by_content_id,
         _mock_does_backend_support_onboarding_patch,
@@ -3767,6 +3745,43 @@ class TestSpecialExamXBlockInfo(ItemTest):
         )
         assert xblock_info["was_exam_ever_linked_with_external"] is False
         assert mock_get_exam_by_content_id.call_count == 1
+
+    @patch_get_exam_configuration_dashboard_url
+    @patch_does_backend_support_onboarding
+    @patch_get_exam_by_content_id_success
+    def test_special_exam_xblock_info_get_dashboard_error(
+        self,
+        mock_get_exam_by_content_id,
+        _mock_does_backend_support_onboarding,
+        mock_get_exam_configuration_dashboard_url,
+    ):
+        sequential = BlockFactory.create(
+            parent_location=self.chapter.location,
+            category="sequential",
+            display_name="Test Lesson 1",
+            user_id=self.user.id,
+            is_proctored_enabled=True,
+            is_time_limited=True,
+            default_time_limit_minutes=100,
+            is_onboarding_exam=False,
+        )
+        sequential = modulestore().get_item(sequential.location)
+        mock_get_exam_configuration_dashboard_url.side_effect = Exception("proctoring error")
+        xblock_info = create_xblock_info(
+            sequential,
+            include_child_info=True,
+            include_children_predicate=ALWAYS,
+        )
+
+        # no errors should be raised and proctoring_exam_configuration_link is None
+        assert xblock_info["is_proctored_exam"] is True
+        assert xblock_info["was_exam_ever_linked_with_external"] is True
+        assert xblock_info["is_time_limited"] is True
+        assert xblock_info["default_time_limit_minutes"] == 100
+        assert xblock_info["proctoring_exam_configuration_link"] is None
+        assert xblock_info["supports_onboarding"] is True
+        assert xblock_info["is_onboarding_exam"] is False
+        assert xblock_info["show_review_rules"] is True
 
 
 class TestLibraryXBlockInfo(ModuleStoreTestCase):
@@ -4370,7 +4385,7 @@ class TestXBlockPublishingInfo(ItemTest):
 
 
 @patch(
-    "xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types",
+    "xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types",
     lambda self, block: ["test_aside"],
 )
 class TestUpdateFromSource(ModuleStoreTestCase):
@@ -4493,3 +4508,61 @@ class TestUpdateFromSource(ModuleStoreTestCase):
             user_id=user.id,
         )
         self.check_updated(source_block, destination_block.location)
+
+
+class TestXblockEditView(CourseTestCase):
+    """
+    Test xblock_edit_view.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.chapter = self._create_block(self.course, "chapter", "Week 1")
+        self.sequential = self._create_block(self.chapter, "sequential", "Lesson 1")
+        self.vertical = self._create_block(self.sequential, "vertical", "Unit")
+        self.html = self._create_block(self.vertical, "html", "HTML")
+        self.child_container = self._create_block(
+            self.vertical, "split_test", "Split Test"
+        )
+        self.child_vertical = self._create_block(
+            self.child_container, "vertical", "Child Vertical"
+        )
+        self.video = self._create_block(self.child_vertical, "video", "My Video")
+        self.store = modulestore()
+
+        self.store.publish(self.vertical.location, self.user.id)
+
+    def _create_block(self, parent, category, display_name, **kwargs):
+        """
+        creates a block in the module store, without publishing it.
+        """
+        return BlockFactory.create(
+            parent=parent,
+            category=category,
+            display_name=display_name,
+            publish_item=False,
+            user_id=self.user.id,
+            **kwargs,
+        )
+
+    def test_xblock_edit_view(self):
+        url = reverse_usage_url("xblock_edit_handler", self.video.location)
+        resp = self.client.get_html(url)
+        self.assertEqual(resp.status_code, 200)
+
+        html_content = resp.content.decode(resp.charset)
+        self.assertIn("var decodedActionName = 'edit';", html_content)
+
+    def test_xblock_edit_view_contains_resources(self):
+        url = reverse_usage_url("xblock_edit_handler", self.video.location)
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+
+        html_content = resp.content.decode(resp.charset)
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        resource_links = [link["href"] for link in soup.find_all("link", {"rel": "stylesheet"})]
+        script_sources = [script["src"] for script in soup.find_all("script") if script.get("src")]
+
+        self.assertGreater(len(resource_links), 0, f"No CSS resources found in HTML. Found: {resource_links}")
+        self.assertGreater(len(script_sources), 0, f"No JS resources found in HTML. Found: {script_sources}")

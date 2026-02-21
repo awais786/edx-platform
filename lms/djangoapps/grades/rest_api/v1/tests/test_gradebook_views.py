@@ -22,6 +22,7 @@ from rest_framework.test import APITestCase
 from xmodule.modulestore.tests.django_utils import SharedModuleStoreTestCase
 from xmodule.modulestore.tests.factories import CourseFactory, BlockFactory
 
+import openedx.core.djangoapps.content.block_structure.api as bs_api
 from common.djangoapps.course_modes.models import CourseMode
 from common.djangoapps.student.roles import (
     CourseBetaTesterRole,
@@ -34,7 +35,10 @@ from common.djangoapps.student.tests.factories import CourseEnrollmentFactory, U
 from common.djangoapps.student.tests.factories import InstructorFactory
 from common.djangoapps.student.tests.factories import StaffFactory
 from lms.djangoapps.certificates.data import CertificateStatuses
-from lms.djangoapps.certificates.models import GeneratedCertificate
+from lms.djangoapps.certificates.api import (
+    get_certificate_for_user_id,
+    create_or_update_eligible_certificate_for_user
+)
 from lms.djangoapps.grades.config.waffle import BULK_MANAGEMENT, WRITABLE_GRADEBOOK
 from lms.djangoapps.grades.constants import GradeOverrideFeatureEnum
 from lms.djangoapps.grades.course_data import CourseData
@@ -1818,11 +1822,12 @@ class GradebookBulkUpdateViewTest(GradebookViewTestBase):
         Test that when we update a user's grade to failing, their certificate is marked notpassing
         """
         with override_waffle_flag(self.waffle_flag, active=True):
-            GeneratedCertificate.eligible_certificates.create(
-                user=self.student,
-                course_id=self.course.id,
-                status=CertificateStatuses.downloadable,
-            )
+            cert_args = {
+                "user": self.student,
+                "course_id": self.course.id,
+                "status": CertificateStatuses.downloadable,
+            }
+            create_or_update_eligible_certificate_for_user(**cert_args)
             self.login_staff()
             post_data = [
                 {
@@ -1852,7 +1857,7 @@ class GradebookBulkUpdateViewTest(GradebookViewTestBase):
                 content_type='application/json',
             )
             assert status.HTTP_202_ACCEPTED == resp.status_code
-            cert = GeneratedCertificate.certificate_for_student(self.student, self.course.id)
+            cert = get_certificate_for_user_id(self.student, self.course.id)
             assert cert.status == CertificateStatuses.notpassing
 
 
@@ -2227,6 +2232,9 @@ class SubsectionGradeViewTest(GradebookViewTestBase):
             start=datetime(2999, 1, 1, tzinfo=UTC),  # arbitrary future date
             display_name='Unreleased Section',
         )
+
+        # We need to update the course in the cache after we create the new block.
+        bs_api.update_course_in_cache(self.course_data.course_key)
 
         resp = self.client.get(
             self.get_url(subsection_id=unreleased_subsection.location)

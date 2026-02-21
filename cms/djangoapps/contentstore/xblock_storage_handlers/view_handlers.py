@@ -10,6 +10,7 @@ Along with it, we moved the business logic of the other views in that file, sinc
 """
 import logging
 from datetime import datetime
+from uuid import uuid4
 
 from attrs import asdict
 from django.conf import settings
@@ -19,6 +20,7 @@ from django.core.exceptions import PermissionDenied
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.utils.translation import gettext as _
 from edx_django_utils.plugins import pluggable_override
+from openedx.core.djangoapps.content_libraries.api import ContainerMetadata, ContainerType, LibraryXBlockMetadata
 from openedx.core.djangoapps.content_tagging.api import get_object_tag_counts
 from edx_proctoring.api import (
     does_backend_support_onboarding,
@@ -27,14 +29,18 @@ from edx_proctoring.api import (
 )
 from edx_proctoring.exceptions import ProctoredExamNotFoundException
 from help_tokens.core import HelpUrlExpert
-from opaque_keys.edx.locator import LibraryUsageLocator
+from opaque_keys.edx.locator import LibraryUsageLocator, LibraryUsageLocatorV2
 from pytz import UTC
 from xblock.core import XBlock
 from xblock.fields import Scope
+from .xblock_helpers import get_block_key_string
 
-from cms.djangoapps.contentstore.config.waffle import SHOW_REVIEW_RULES_FLAG
+from cms.djangoapps.contentstore.helpers import StaticFileNotices
 from cms.djangoapps.models.settings.course_grading import CourseGradingModel
 from cms.lib.ai_aside_summary_config import AiAsideSummaryConfig
+from cms.lib.xblock.upstream_sync import BadUpstream, UpstreamLink
+from cms.lib.xblock.upstream_sync_block import sync_from_upstream_block
+from cms.lib.xblock.upstream_sync_container import sync_from_upstream_container
 from common.djangoapps.static_replace import replace_static_urls
 from common.djangoapps.student.auth import (
     has_studio_read_access,
@@ -42,6 +48,7 @@ from common.djangoapps.student.auth import (
 )
 from common.djangoapps.util.date_utils import get_default_time_display
 from common.djangoapps.util.json_request import JsonResponse, expect_json
+from common.djangoapps.util.proctoring import show_review_rules
 from openedx.core.djangoapps.bookmarks import api as bookmarks_api
 from openedx.core.djangoapps.content_tagging.toggles import is_tagging_feature_disabled
 from openedx.core.djangoapps.discussions.models import DiscussionsConfiguration
@@ -76,8 +83,10 @@ from ..utils import (
 from .create_xblock import create_xblock
 from .xblock_helpers import usage_key_with_run
 from ..helpers import (
+    concat_static_file_notices,
     get_parent_xblock,
     import_staged_content_from_user_clipboard,
+    import_static_assets_for_library_sync,
     is_unit,
     xblock_embed_lms_url,
     xblock_lms_url,
@@ -292,26 +301,20 @@ def modify_xblock(usage_key, request):
     )
 
 
-def _update_with_callback(xblock, user, old_metadata=None, old_content=None):
+def save_xblock_with_callback(xblock, user, old_metadata=None, old_content=None):
     """
     Updates the xblock in the modulestore.
     But before doing so, it calls the xblock's editor_saved callback function,
     and after doing so, it calls the xblock's post_editor_saved callback function.
-
-    TODO: Remove getattrs from this function.
-          See https://github.com/openedx/edx-platform/issues/33715
     """
     if old_metadata is None:
         old_metadata = own_metadata(xblock)
     if old_content is None:
         old_content = xblock.get_explicitly_set_fields_by_scope(Scope.content)
-    if hasattr(xblock, "editor_saved"):
-        load_services_for_studio(xblock.runtime, user)
-        xblock.editor_saved(user, old_metadata, old_content)
+    load_services_for_studio(xblock.runtime, user)
+    xblock.editor_saved(user, old_metadata, old_content)
     xblock_updated = modulestore().update_item(xblock, user.id)
-    if hasattr(xblock_updated, "post_editor_saved"):
-        load_services_for_studio(xblock_updated.runtime, user)
-        xblock_updated.post_editor_saved(user, old_metadata, old_content)
+    xblock_updated.post_editor_saved(user, old_metadata, old_content)
     return xblock_updated
 
 
@@ -371,7 +374,7 @@ def _save_xblock(
                 if old_parent_location:
                     old_parent = store.get_item(old_parent_location)
                     old_parent.children.remove(new_child)
-                    old_parent = _update_with_callback(old_parent, user)
+                    old_parent = save_xblock_with_callback(old_parent, user)
                 else:
                     # the Studio UI currently doesn't present orphaned children, so assume this is an error
                     return JsonResponse(
@@ -441,7 +444,7 @@ def _save_xblock(
 
         validate_and_update_xblock_due_date(xblock)
         # update the xblock and call any xblock callbacks
-        xblock = _update_with_callback(xblock, user, old_metadata, old_content)
+        xblock = save_xblock_with_callback(xblock, user, old_metadata, old_content)
 
         # for static tabs, their containing course also records their display name
         course = store.get_course(xblock.location.course_key)
@@ -523,6 +526,112 @@ def create_item(request):
     return _create_block(request)
 
 
+def sync_library_content(
+    downstream: XBlock,
+    request,
+    store,
+    top_level_parent: XBlock | None = None,
+) -> StaticFileNotices:
+    """
+    Handle syncing library content for given xblock depending on its upstream type.
+    It can sync unit containers and lower level xblocks.
+    """
+    link = UpstreamLink.get_for_block(downstream)
+    upstream_key = link.upstream_key
+    request_data = getattr(request, "json", getattr(request, "data", {}))
+    override_customizations = request_data.get("override_customizations", False)
+    keep_custom_fields = request_data.get("keep_custom_fields", [])
+    if isinstance(upstream_key, LibraryUsageLocatorV2):
+        lib_block = sync_from_upstream_block(
+            downstream=downstream,
+            user=request.user,
+            top_level_parent=top_level_parent,
+            override_customizations=override_customizations,
+            keep_custom_fields=keep_custom_fields,
+        )
+        if lib_block:
+            static_file_notices = import_static_assets_for_library_sync(downstream, lib_block, request)
+        else:
+            static_file_notices = StaticFileNotices()
+        store.update_item(downstream, request.user.id)
+    else:
+        with store.bulk_operations(downstream.usage_key.context_key):
+            upstream_children = sync_from_upstream_container(downstream=downstream, user=request.user)
+            downstream_children = downstream.get_children()
+            downstream_children_keys = [child.upstream for child in downstream_children]
+            # Sync the children:
+            notices = []
+            # Store final children keys to update order of items in containers
+            children = []
+
+            top_level_downstream_parent = top_level_parent or downstream
+
+            for i, upstream_child in enumerate(upstream_children):
+                if isinstance(upstream_child, LibraryXBlockMetadata):
+                    upstream_key = str(upstream_child.usage_key)
+                    block_type = upstream_child.usage_key.block_type
+                elif isinstance(upstream_child, ContainerMetadata):
+                    upstream_key = str(upstream_child.container_key)
+                    match upstream_child.container_type:
+                        case ContainerType.Unit:
+                            block_type = "vertical"
+                        case ContainerType.Subsection:
+                            block_type = "sequential"
+                        case _:
+                            # We don't support other container types for now.
+                            log.error(
+                                "Unexpected upstream child container type: %s",
+                                upstream_child.container_type,
+                            )
+                            continue
+                else:
+                    log.error(
+                        "Unexpected type of upstream child: %s",
+                        type(upstream_child),
+                    )
+                    continue
+
+                if upstream_key not in downstream_children_keys:
+                    # This upstream_child is new, create it.
+                    downstream_child = store.create_child(
+                        parent_usage_key=downstream.usage_key,
+                        position=i,
+                        user_id=request.user.id,
+                        block_type=block_type,
+                        # TODO: Can we generate a unique but friendly block_id, perhaps using upstream block_id
+                        block_id=f"{block_type}{uuid4().hex[:8]}",
+                        fields={
+                            "upstream": upstream_key,
+                            "top_level_downstream_parent_key": get_block_key_string(
+                                top_level_downstream_parent.usage_key,
+                            ),
+                        },
+                    )
+                else:
+                    downstream_child_old_index = downstream_children_keys.index(upstream_key)
+                    downstream_child = downstream_children[downstream_child_old_index]
+
+                children.append(downstream_child.usage_key)
+
+                result = sync_library_content(
+                    downstream=downstream_child,
+                    request=request,
+                    store=store,
+                    top_level_parent=top_level_downstream_parent,
+                )
+                notices.append(result)
+
+            for child in downstream_children:
+                if child.usage_key not in children:
+                    # This downstream block was added, or deleted from upstream block.
+                    # NOTE: This will also delete any local additions to a unit in the next upstream sync.
+                    store.delete_item(child.usage_key, user_id=request.user.id)
+            downstream.children = children
+            store.update_item(downstream, request.user.id)
+        static_file_notices = concat_static_file_notices(notices)
+    return static_file_notices
+
+
 @login_required
 @expect_json
 def _create_block(request):
@@ -536,7 +645,8 @@ def _create_block(request):
         # Paste from the user's clipboard (content_staging app clipboard, not browser clipboard) into 'usage_key':
         try:
             created_xblock, notices = import_staged_content_from_user_clipboard(
-                parent_key=usage_key, request=request
+                parent_key=usage_key,
+                request=request,
             )
         except Exception:  # pylint: disable=broad-except
             log.exception(
@@ -553,6 +663,7 @@ def _create_block(request):
             "locator": str(created_xblock.location),
             "courseKey": str(created_xblock.location.course_key),
             "static_file_notices": asdict(notices),
+            "upstreamRef": str(created_xblock.upstream),
         })
 
     category = request.json["category"]
@@ -582,12 +693,30 @@ def _create_block(request):
         boilerplate=request.json.get("boilerplate"),
     )
 
-    return JsonResponse(
-        {
-            "locator": str(created_block.location),
-            "courseKey": str(created_block.location.course_key),
-        }
-    )
+    response = {
+        "locator": str(created_block.location),
+        "courseKey": str(created_block.location.course_key),
+    }
+    # If it contains library_content_key, the block is being imported from a v2 library
+    # so it needs to be synced with upstream block.
+    if upstream_ref := request.json.get("library_content_key"):
+        # Set `created_block.upstream` and then sync this with the upstream (library) version.
+        created_block.upstream = upstream_ref
+        try:
+            store = modulestore()
+            static_file_notices = sync_library_content(created_block, request, store)
+        except BadUpstream as exc:
+            _delete_item(created_block.location, request.user)
+            log.exception(
+                f"Could not sync to new block at '{created_block.usage_key}' "
+                f"using provided library_content_key='{upstream_ref}'"
+            )
+            return JsonResponse({"error": str(exc)}, status=400)
+        response["upstreamRef"] = upstream_ref
+        response["static_file_notices"] = asdict(static_file_notices)
+        response["parent_locator"] = parent_locator
+
+    return JsonResponse(response)
 
 
 def _get_source_index(source_usage_key, source_parent):
@@ -998,11 +1127,14 @@ def create_xblock_info(  # lint-amnesty, pylint: disable=too-many-statements
 
     # defining the default value 'True' for delete, duplicate, drag and add new child actions
     # in xblock_actions for each xblock.
+    # The unlinkable action is set to None by default, which means the action is not applicable for
+    # any xblock unless explicitly set to True or False for a specific xblock condition.
     xblock_actions = {
         "deletable": True,
         "draggable": True,
         "childAddable": True,
         "duplicable": True,
+        "unlinkable": None,
     }
     explanatory_message = None
 
@@ -1070,6 +1202,9 @@ def create_xblock_info(  # lint-amnesty, pylint: disable=too-many-statements
                 "edited_on": get_default_time_display(xblock.subtree_edited_on)
                 if xblock.subtree_edited_on
                 else None,
+                "edited_on_raw": str(xblock.subtree_edited_on)
+                if xblock.subtree_edited_on
+                else None,
                 "published": published,
                 "published_on": published_on,
                 "studio_url": xblock_studio_url(xblock, parent_xblock),
@@ -1117,6 +1252,7 @@ def create_xblock_info(  # lint-amnesty, pylint: disable=too-many-statements
                 xblock_info.update(
                     {
                         "highlights_enabled_for_messaging": course.highlights_enabled_for_messaging,
+                        "end": xblock.fields["end"].to_json(xblock.end),
                     }
                 )
             xblock_info.update(
@@ -1156,19 +1292,19 @@ def create_xblock_info(  # lint-amnesty, pylint: disable=too-many-statements
                     supports_onboarding = False
 
                 proctoring_exam_configuration_link = None
-                if xblock.is_proctored_exam:
-                    proctoring_exam_configuration_link = (
-                        get_exam_configuration_dashboard_url(
-                            course.id, xblock_info["id"]
-                        )
-                    )
 
-                if course.proctoring_provider == "proctortrack":
-                    show_review_rules = SHOW_REVIEW_RULES_FLAG.is_enabled(
-                        xblock.location.course_key
-                    )
-                else:
-                    show_review_rules = True
+                # only call get_exam_configuration_dashboard_url if not using an LTI proctoring provider
+                if xblock.is_proctored_exam and (course.proctoring_provider != 'lti_external'):
+                    try:
+                        proctoring_exam_configuration_link = (
+                            get_exam_configuration_dashboard_url(
+                                course.id, xblock_info["id"]
+                            )
+                        )
+                    except Exception as e:  # pylint: disable=broad-except
+                        log.error(
+                            f"Error while getting proctoring exam configuration link: {e}"
+                        )
 
                 xblock_info.update(
                     {
@@ -1184,15 +1320,26 @@ def create_xblock_info(  # lint-amnesty, pylint: disable=too-many-statements
                         "default_time_limit_minutes": xblock.default_time_limit_minutes,
                         "proctoring_exam_configuration_link": proctoring_exam_configuration_link,
                         "supports_onboarding": supports_onboarding,
-                        "show_review_rules": show_review_rules,
+                        "show_review_rules": show_review_rules(course.proctoring_provider),
                     }
                 )
 
         # Update with gating info
         xblock_info.update(_get_gating_info(course, xblock))
+        # Also add upstream info
+        upstream_info = UpstreamLink.try_get_for_block(xblock, log_error=False).to_json()
+        xblock_info["upstream_info"] = upstream_info
+
+        if upstream_info["upstream_ref"]:
+            # Disable adding or removing children component if xblock is imported from library
+            xblock_actions["childAddable"] = False
+            # Enable unlinking only for top level imported components
+            xblock_actions["unlinkable"] = not upstream_info["top_level_parent_key"]
+
         if is_xblock_unit:
             # if xblock is a Unit we add the discussion_enabled option
             xblock_info["discussion_enabled"] = xblock.discussion_enabled
+
         if xblock.category == "sequential":
             # Entrance exam subsection should be hidden. in_entrance_exam is
             # inherited metadata, all children will have it.
@@ -1530,14 +1677,14 @@ def _get_release_date(xblock, user=None):
     reset_to_default = False
     try:
         reset_to_default = xblock.start.year < 1900
-    except ValueError:
+    except (ValueError, AttributeError):
         # For old mongo courses, accessing the start attribute calls `to_json()`,
         # which raises a `ValueError` for years < 1900.
         reset_to_default = True
 
     if reset_to_default and user:
         xblock.start = DEFAULT_START_DATE
-        xblock = _update_with_callback(xblock, user)
+        xblock = save_xblock_with_callback(xblock, user)
 
     # Treat DEFAULT_START_DATE as a magic number that means the release date has not been set
     return (

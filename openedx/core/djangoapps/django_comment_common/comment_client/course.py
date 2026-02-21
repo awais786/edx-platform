@@ -7,8 +7,7 @@ from typing import Dict, Optional
 from edx_django_utils.monitoring import function_trace
 from opaque_keys.edx.keys import CourseKey
 
-from openedx.core.djangoapps.django_comment_common.comment_client import settings
-from openedx.core.djangoapps.django_comment_common.comment_client.utils import perform_request
+from forum import api as forum_api
 
 
 def get_course_commentable_counts(course_key: CourseKey) -> Dict[str, Dict[str, int]]:
@@ -29,17 +28,8 @@ def get_course_commentable_counts(course_key: CourseKey) -> Dict[str, Dict[str, 
             }
 
     """
-    url = f"{settings.PREFIX}/commentables/{course_key}/counts"
-    response = perform_request(
-        'get',
-        url,
-        metric_tags=[
-            f"course_key:{course_key}",
-            "function:get_course_commentable_counts",
-        ],
-        metric_action='commentable_stats.retrieve',
-    )
-    return response
+    commentable_stats = forum_api.get_commentables_stats(str(course_key))
+    return commentable_stats
 
 
 @function_trace("get_course_user_stats")
@@ -76,17 +66,8 @@ def get_course_user_stats(course_key: CourseKey, params: Optional[Dict] = None) 
     """
     if params is None:
         params = {}
-    url = f"{settings.PREFIX}/users/{course_key}/stats"
-    return perform_request(
-        'get',
-        url,
-        params,
-        metric_action='user.course_stats',
-        metric_tags=[
-            f"course_key:{course_key}",
-            "function:get_course_user_stats",
-        ],
-    )
+    course_stats = forum_api.get_user_course_stats(str(course_key), **params)
+    return course_stats
 
 
 @function_trace("update_course_users_stats")
@@ -100,13 +81,5 @@ def update_course_users_stats(course_key: CourseKey) -> Dict:
     Returns:
         dict: data returned by API. Contains count of users updated.
     """
-    url = f"{settings.PREFIX}/users/{course_key}/update_stats"
-    return perform_request(
-        'post',
-        url,
-        metric_action='user.update_course_stats',
-        metric_tags=[
-            f"course_key:{course_key}",
-            "function:update_course_users_stats",
-        ],
-    )
+    course_stats = forum_api.update_users_in_course(str(course_key))
+    return course_stats

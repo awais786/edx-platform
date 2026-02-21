@@ -10,7 +10,7 @@ const TerserPlugin = require("terser-webpack-plugin");
 
 var commonConfig = require('./webpack.common.config.js');
 
-var optimizedConfig = Merge.smart(commonConfig, {
+var optimizedConfig = Merge.merge(commonConfig, {
     web: {
         output: {
             filename: '[name].[chunkhash].js'
@@ -19,7 +19,9 @@ var optimizedConfig = Merge.smart(commonConfig, {
         plugins: [
             new webpack.DefinePlugin({
                 'process.env.NODE_ENV': JSON.stringify('production'),
-                'process.env.JS_ENV_EXTRA_CONFIG': process.env.JS_ENV_EXTRA_CONFIG || '{}'
+                'process.env.JS_ENV_EXTRA_CONFIG': process.env.JS_ENV_EXTRA_CONFIG || '{}',
+                'CAPTIONS_CONTENT_TO_REPLACE': JSON.stringify(process.env.CAPTIONS_CONTENT_TO_REPLACE || ''),
+                'CAPTIONS_CONTENT_REPLACEMENT': JSON.stringify(process.env.CAPTIONS_CONTENT_REPLACEMENT || '')
             }),
             new webpack.LoaderOptionsPlugin({ // This may not be needed; legacy option for loaders written for webpack 1
                 minimize: true
@@ -47,7 +49,7 @@ var optimizedConfig = Merge.smart(commonConfig, {
 // gone.
 
 // Step 1: Alter the bundle output names to omit the chunkhash.
-var requireCompatConfig = Merge.smart(optimizedConfig, {
+var requireCompatConfig = Merge.merge(optimizedConfig, {
     web: {
         output: {
             filename: '[name].js'

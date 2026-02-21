@@ -4,6 +4,8 @@ Subscription model is used to get users who are subscribed to the main thread/po
 import logging
 
 from . import models, settings, utils
+from forum import api as forum_api
+from forum.backend import get_backend
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +23,7 @@ class Subscription(models.Model):
     base_url = f"{settings.PREFIX}/threads"
 
     @classmethod
-    def fetch(cls, thread_id, query_params):
+    def fetch(cls, thread_id, course_id, query_params):
         """
         Fetches the subscriptions for a given thread_id
         """
@@ -33,13 +35,12 @@ class Subscription(models.Model):
         params.update(
             utils.strip_blank(utils.strip_none(query_params))
         )
-        response = utils.perform_request(
-            'get',
-            cls.url(action='get', params=params) + "/subscriptions",
-            params,
-            metric_tags=[],
-            metric_action='subscription.get',
-            paged_results=True
+        course_key = utils.get_course_key(course_id)
+        response = forum_api.get_thread_subscriptions(
+            thread_id=thread_id,
+            page=params["page"],
+            per_page=params["per_page"],
+            course_id=str(course_key)
         )
         return utils.SubscriptionsPaginatedResult(
             collection=response.get('collection', []),
@@ -48,3 +49,16 @@ class Subscription(models.Model):
             subscriptions_count=response.get('subscriptions_count', 0),
             corrected_text=response.get('corrected_text', None)
         )
+
+    @staticmethod
+    def is_user_subscribed_to_thread(user_id, thread_id, course_id):
+        """
+        Check if a user is subscribed to a thread
+        """
+        backend = get_backend(course_id)()
+        subscription = backend.get_subscription(
+            subscriber_id=user_id,
+            source_id=thread_id,
+            source_type="CommentThread"
+        )
+        return subscription is not None

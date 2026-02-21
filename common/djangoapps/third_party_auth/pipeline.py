@@ -90,7 +90,9 @@ from openedx.core.djangoapps.site_configuration import helpers as configuration_
 from openedx.core.djangoapps.user_api import accounts
 from openedx.core.djangoapps.user_api.accounts.utils import username_suffix_generator
 from openedx.core.djangoapps.user_authn import cookies as user_authn_cookies
+from openedx.core.djangoapps.user_authn.toggles import is_auto_generated_username_enabled
 from openedx.core.djangoapps.user_authn.utils import is_safe_login_or_logout_redirect
+from openedx.core.djangoapps.user_authn.views.utils import get_auto_generated_username
 from common.djangoapps.third_party_auth.utils import (
     get_associated_user_by_email_response,
     get_user_from_email,
@@ -377,10 +379,13 @@ def get_disconnect_url(provider_id, association_id):
         ValueError: if no provider is enabled with the given ID.
     """
     backend_name = _get_enabled_provider(provider_id).backend_name
+    # Use custom JSON disconnect endpoint to avoid CORS issues
     if association_id:
-        return _get_url('social:disconnect_individual', backend_name, url_params={'association_id': association_id})
+        return _get_url(
+            'custom_disconnect_json_individual', backend_name, url_params={'association_id': association_id}
+        )
     else:
-        return _get_url('social:disconnect', backend_name)
+        return _get_url('custom_disconnect_json', backend_name)
 
 
 def get_login_url(provider_id, auth_entry, redirect_url=None):
@@ -713,8 +718,18 @@ def login_analytics(strategy, auth_entry, current_partial=None, *args, **kwargs)
     """ Sends login info to Segment """
 
     event_name = None
+    anonymous_id = ""
+    additional_params = {}
+
+    try:
+        request = kwargs['request']
+        anonymous_id = request.COOKIES.get('ajs_anonymous_id', "")
+    except:  # pylint: disable=bare-except
+        pass
+
     if auth_entry == AUTH_ENTRY_LOGIN:
         event_name = 'edx.bi.user.account.authenticated'
+        additional_params['anonymous_id'] = anonymous_id
     elif auth_entry in [AUTH_ENTRY_ACCOUNT_SETTINGS]:
         event_name = 'edx.bi.user.account.linked'
 
@@ -722,7 +737,8 @@ def login_analytics(strategy, auth_entry, current_partial=None, *args, **kwargs)
         segment.track(kwargs['user'].id, event_name, {
             'category': "conversion",
             'label': None,
-            'provider': kwargs['backend'].name
+            'provider': kwargs['backend'].name,
+            **additional_params
         })
 
 
@@ -774,6 +790,7 @@ def associate_by_email_if_saml(auth_entry, backend, details, user, strategy, *ar
 
     This association is done ONLY if the user entered the pipeline belongs to SAML provider.
     """
+    from openedx.features.enterprise_support.api import enterprise_is_enabled
 
     def get_user():
         """
@@ -782,6 +799,7 @@ def associate_by_email_if_saml(auth_entry, backend, details, user, strategy, *ar
         user_details = {'email': details.get('email')} if details else None
         return get_user_from_email(user_details or {})
 
+    @enterprise_is_enabled()
     def associate_by_email_if_enterprise_user():
         """
         If the learner arriving via SAML is already linked to the enterprise customer linked to the same IdP,
@@ -991,12 +1009,15 @@ def get_username(strategy, details, backend, user=None, *args, **kwargs):  # lin
         else:
             slug_func = lambda val: val
 
-        if email_as_username and details.get('email'):
-            username = details['email']
-        elif details.get('username'):
-            username = details['username']
+        if is_auto_generated_username_enabled() and details.get('username') is None:
+            username = get_auto_generated_username(details)
         else:
-            username = uuid4().hex
+            if email_as_username and details.get('email'):
+                username = details['email']
+            elif details.get('username'):
+                username = details['username']
+            else:
+                username = uuid4().hex
 
         input_username = username
         final_username = slug_func(clean_func(username[:max_length]))

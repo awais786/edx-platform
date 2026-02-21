@@ -2,7 +2,6 @@
 Models for notifications
 """
 import logging
-from typing import Dict
 
 from django.contrib.auth import get_user_model
 from django.db import models
@@ -10,9 +9,8 @@ from model_utils.models import TimeStampedModel
 from opaque_keys.edx.django.models import CourseKeyField
 
 from openedx.core.djangoapps.notifications.base_notification import (
-    NotificationAppManager,
-    NotificationPreferenceSyncManager,
-    get_notification_content
+    get_notification_content,
+    COURSE_NOTIFICATION_TYPES, get_default_values_of_preferences
 )
 
 User = get_user_model()
@@ -21,62 +19,6 @@ log = logging.getLogger(__name__)
 NOTIFICATION_CHANNELS = ['web', 'push', 'email']
 
 ADDITIONAL_NOTIFICATION_CHANNEL_SETTINGS = ['email_cadence']
-
-# Update this version when there is a change to any course specific notification type or app.
-COURSE_NOTIFICATION_CONFIG_VERSION = 10
-
-
-def get_course_notification_preference_config():
-    """
-    Returns the course specific notification preference config.
-
-    Sample Response:
-    {
-        'discussion': {
-            'enabled': True,
-            'not_editable': {
-                'new_comment_on_post': ['push'],
-                'new_response_on_post': ['web'],
-                'new_response_on_comment': ['web', 'push']
-            },
-            'notification_types': {
-                'new_comment_on_post': {
-                    'email': True,
-                    'push': True,
-                    'web': True,
-                    'info': 'Comment on post'
-                },
-                'new_response_on_comment': {
-                    'email': True,
-                    'push': True,
-                    'web': True,
-                    'info': 'Response on comment'
-                },
-                'new_response_on_post': {
-                    'email': True,
-                    'push': True,
-                    'web': True,
-                    'info': 'New Response on Post'
-                },
-                'core': {
-                    'email': True,
-                    'push': True,
-                    'web': True,
-                    'info': 'comment on post and response on comment'
-                }
-            },
-            'core_notification_types': []
-        }
-    }
-    """
-    return NotificationAppManager().get_notification_app_preferences()
-
-
-def get_course_notification_preference_config_version():
-    """
-    Returns the notification preference config version.
-    """
-    return COURSE_NOTIFICATION_CONFIG_VERSION
 
 
 def get_notification_channels():
@@ -107,8 +49,24 @@ class Notification(TimeStampedModel):
     content_url = models.URLField(null=True, blank=True)
     web = models.BooleanField(default=True, null=False, blank=False)
     email = models.BooleanField(default=False, null=False, blank=False)
+    push = models.BooleanField(default=False, null=False, blank=False)
     last_read = models.DateTimeField(null=True, blank=True)
     last_seen = models.DateTimeField(null=True, blank=True)
+    group_by_id = models.CharField(max_length=255, db_index=True, null=False, default="")
+    email_sent_on = models.DateTimeField(null=True, blank=True)
+    email_scheduled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if this notification is waiting in buffer for digest"
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=['user', 'course_id', 'email_sent_on', 'email_scheduled'],
+                name='notif_email_buffer_idx'
+            ),
+        ]
 
     def __str__(self):
         return f'{self.user.username} - {self.course_id} - {self.app_name} - {self.notification_type}'
@@ -121,147 +79,119 @@ class Notification(TimeStampedModel):
         return get_notification_content(self.notification_type, self.content_context)
 
 
-class CourseNotificationPreference(TimeStampedModel):
+class NotificationPreference(TimeStampedModel):
     """
-    Model to store notification preferences for users
+    Model to store notification preferences for users at account level
+    """
 
-    .. no_pii:
-    """
-    user = models.ForeignKey(User, related_name="notification_preferences", on_delete=models.CASCADE)
-    course_id = CourseKeyField(max_length=255, null=False, blank=False)
-    notification_preference_config = models.JSONField(default=get_course_notification_preference_config)
-    # This version indicates the current version of this notification preference.
-    config_version = models.IntegerField(default=get_course_notification_preference_config_version)
-    is_active = models.BooleanField(default=True)
+    class EmailCadenceChoices(models.TextChoices):
+        DAILY = 'Daily'
+        WEEKLY = 'Weekly'
+        IMMEDIATELY = 'Immediately'
 
     class Meta:
-        unique_together = ('user', 'course_id')
+        # Ensures user do not have duplicate preferences.
+        unique_together = ('user', 'app', 'type',)
+
+    user = models.ForeignKey(User, related_name="notification_preference", on_delete=models.CASCADE)
+    type = models.CharField(max_length=128, db_index=True)
+    app = models.CharField(max_length=128, null=False, blank=False, db_index=True)
+    web = models.BooleanField(default=True, null=False, blank=False)
+    push = models.BooleanField(default=False, null=False, blank=False)
+    email = models.BooleanField(default=False, null=False, blank=False)
+    email_cadence = models.CharField(max_length=64, choices=EmailCadenceChoices.choices, null=False, blank=False)
+    is_active = models.BooleanField(default=True)
 
     def __str__(self):
-        return f'{self.user.username} - {self.course_id}'
+        return f"{self.user_id} {self.type} (Web:{self.web}) (Push:{self.push})" \
+               f"(Email:{self.email}, {self.email_cadence})"
 
-    @staticmethod
-    def get_user_course_preference(user_id, course_id):
+    @property
+    def is_grouped(self):
         """
-        Returns updated courses preferences for a user
+        Returns True if the notification type is grouped.
         """
-        preferences, _ = CourseNotificationPreference.objects.get_or_create(
-            user_id=user_id,
-            course_id=course_id,
-            is_active=True,
-        )
-        current_config_version = get_course_notification_preference_config_version()
-        if current_config_version != preferences.config_version:
-            try:
-                current_prefs = preferences.notification_preference_config
-                new_prefs = NotificationPreferenceSyncManager.update_preferences(current_prefs)
-                preferences.config_version = current_config_version
-                preferences.notification_preference_config = new_prefs
-                preferences.save()
-                # pylint: disable-next=broad-except
-            except Exception as e:
-                log.error(f'Unable to update notification preference to new config. {e}')
+        default_preference_setting = get_default_values_of_preferences().get(self.type, {})
+        return default_preference_setting.get('use_app_defaults', False)
+
+    @property
+    def config(self):
+        """
+        Returns the configuration for the notification preference.
+        """
+        default_preference_setting = get_default_values_of_preferences().get(self.type, {})
+        return {
+            'web': self.web,
+            'push': self.push,
+            'email': self.email,
+            'email_cadence': self.email_cadence,
+            'info': default_preference_setting.get('info', '')
+        }
+
+    @classmethod
+    def create_default_preferences_for_user(cls, user_id) -> list:
+        """
+        Creates all preferences for user
+        Note: It creates preferences using bulk create, so primary key will be missing for newly created
+        preference. Refetch if primary key is needed
+        """
+        preferences = list(NotificationPreference.objects.filter(user_id=user_id))
+        user_preferences_map = {pref.type: pref for pref in preferences}
+        diff = set(COURSE_NOTIFICATION_TYPES.keys()) - set(user_preferences_map.keys())
+
+        if diff:
+            missing_types = [
+                create_notification_preference(user_id=user_id, notification_type=missing_type)
+                for missing_type in diff
+            ]
+            new_preferences = NotificationPreference.objects.bulk_create(missing_types)
+            preferences = preferences + list(new_preferences)
         return preferences
 
-    @staticmethod
-    def get_updated_user_course_preferences(user, course_id):
-        return CourseNotificationPreference.get_user_course_preference(user.id, course_id)
+    def is_enabled_for_any_channel(self, *args, **kwargs) -> bool:
+        """
+        Returns True if the notification preference is enabled for any channel.
+        """
+        return self.web or self.push or self.email
 
-    def get_app_config(self, app_name) -> Dict:
-        """
-        Returns the app config for the given app name.
-        """
-        return self.notification_preference_config.get(app_name, {})
-
-    def get_notification_types(self, app_name) -> Dict:
-        """
-        Returns the notification types for the given app name.
-
-        Sample Response:
-        {
-            'new_comment_on_post': {
-                'email': True,
-                'push': True,
-                'web': True,
-                'info': 'Comment on post'
-            },
-            'new_response_on_comment': {
-                'email': True,
-                'push': True,
-                'web': True,
-                'info': 'Response on comment'
-            },
-        """
-        return self.get_app_config(app_name).get('notification_types', {})
-
-    def get_notification_type_config(self, app_name, notification_type) -> Dict:
-        """
-        Returns the notification type config for the given app name and notification type.
-
-        Sample Response:
-        {
-            'email': True,
-            'push': True,
-            'web': True,
-            'info': 'Comment on post'
-        }
-        """
-        return self.get_notification_types(app_name).get(notification_type, {})
-
-    def get_web_config(self, app_name, notification_type) -> bool:
-        """
-        Returns the web config for the given app name and notification type.
-        """
-        if self.is_core(app_name, notification_type):
-            return self.get_core_config(app_name).get('web', False)
-        return self.get_notification_type_config(app_name, notification_type).get('web', False)
-
-    def is_enabled_for_any_channel(self, app_name, notification_type) -> bool:
-        """
-        Returns True if the notification type is enabled for any channel.
-        """
-        if self.is_core(app_name, notification_type):
-            return any(self.get_core_config(app_name).get(channel, False) for channel in NOTIFICATION_CHANNELS)
-        return any(self.get_notification_type_config(app_name, notification_type).get(channel, False) for channel in
-                   NOTIFICATION_CHANNELS)
-
-    def get_channels_for_notification_type(self, app_name, notification_type) -> list:
+    def get_channels_for_notification_type(self, *args, **kwargs) -> list:
         """
         Returns the channels for the given app name and notification type.
-        if notification is core then return according to core settings
         Sample Response:
         ['web', 'push']
         """
-        if self.is_core(app_name, notification_type):
-            notification_channels = [channel for channel in NOTIFICATION_CHANNELS if
-                                     self.get_core_config(app_name).get(channel, False)]
-            additional_channel_settings = [channel for channel in ADDITIONAL_NOTIFICATION_CHANNEL_SETTINGS if
-                                           self.get_core_config(app_name).get(channel, False)]
-        else:
-            notification_channels = [channel for channel in NOTIFICATION_CHANNELS if
-                                     self.get_notification_type_config(app_name, notification_type).get(channel, False)]
-            additional_channel_settings = [channel for channel in ADDITIONAL_NOTIFICATION_CHANNEL_SETTINGS if
-                                           self.get_notification_type_config(app_name, notification_type).get(channel,
-                                                                                                              False)]
+        channels = []
+        if self.web:
+            channels.append('web')
+        if self.push:
+            channels.append('push')
+        if self.email:
+            channels.append('email')
+        return channels
 
-        return notification_channels + additional_channel_settings
+    def get_email_cadence_for_notification_type(self, *args, **kwargs) -> str:
+        """
+        Returns the email cadence for the notification type.
+        """
+        return self.email_cadence
 
-    def is_core(self, app_name, notification_type) -> bool:
-        """
-        Returns True if the given notification type is a core notification type.
-        """
-        return notification_type in self.get_app_config(app_name).get('core_notification_types', [])
 
-    def get_core_config(self, app_name) -> Dict:
-        """
-        Returns the core config for the given app name.
-
-        Sample Response:
-        {
-            'email': True,
-            'push': True,
-            'web': True,
-            'info': 'comment on post and response on comment'
-        }
-        """
-        return self.get_notification_types(app_name).get('core', {})
+def create_notification_preference(user_id: int, notification_type: str) -> NotificationPreference:
+    """
+    Create a single notification preference with appropriate defaults.
+    Args:
+        user_id: ID of the user
+        notification_type: Type of notification
+    Returns:
+        NotificationPreference instance
+    """
+    default_preference_setting = get_default_values_of_preferences()[notification_type]
+    return NotificationPreference(
+        user_id=user_id,
+        type=notification_type,
+        app=default_preference_setting['notification_app'],
+        web=default_preference_setting['web'],
+        push=default_preference_setting['push'],
+        email=default_preference_setting['email'],
+        email_cadence=default_preference_setting['email_cadence']
+    )

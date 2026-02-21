@@ -12,6 +12,7 @@ from django.utils.translation import gettext_lazy as _
 from django.views.generic.base import RedirectView
 from edx_api_doc_tools import make_docs_urls
 from edx_django_utils.plugins import get_plugin_url_patterns
+from submissions import urls as submissions_urls
 
 from common.djangoapps.student import views as student_views
 from common.djangoapps.util import views as util_views
@@ -41,7 +42,6 @@ from openedx.core.djangoapps.common_views.xblock import xblock_resource
 from openedx.core.djangoapps.cors_csrf import views as cors_csrf_views
 from openedx.core.djangoapps.course_groups import views as course_groups_views
 from openedx.core.djangoapps.debug import views as openedx_debug_views
-from openedx.core.djangoapps.django_comment_common.models import ForumsConfig
 from openedx.core.djangoapps.lang_pref import views as lang_pref_views
 from openedx.core.djangoapps.password_policy import compliance as password_policy_compliance
 from openedx.core.djangoapps.password_policy.forms import PasswordPolicyAwareAdminAuthForm
@@ -129,9 +129,6 @@ urlpatterns = [
         ),
     ),
 
-    # Demographics API RESTful endpoints
-    path('api/demographics/', include('openedx.core.djangoapps.demographics.rest_api.urls')),
-
     # Courseware search endpoints
     path('search/', include('search.urls')),
 
@@ -195,12 +192,12 @@ urlpatterns = [
     path('api-admin/', include(('openedx.core.djangoapps.api_admin.urls', 'openedx.core.djangoapps.api_admin'),
                                namespace='api_admin')),
 
-    # Learner Dashboard
-    path('dashboard/', include('lms.djangoapps.learner_dashboard.urls')),
-    path('api/dashboard/', include('lms.djangoapps.learner_dashboard.api.urls', namespace='dashboard_api')),
-
-    # Learner Home
+    # Learner Home and Program Dashboard
     path('api/learner_home/', include('lms.djangoapps.learner_home.urls', namespace='learner_home')),
+    path('dashboard/', include('lms.djangoapps.learner_dashboard.urls')),
+    # This is the legacy URL for the program dashboard API when the legacy learner dashboard existed.
+    # Current-and-future advertised URLs for this API will be under 'api/learner_home'
+    path('api/dashboard/', include('openedx.core.djangoapps.programs.rest_api.urls', namespace='dashboard_api')),
 
     path(
         'api/experiments/',
@@ -221,7 +218,7 @@ urlpatterns = [
 
 if settings.FEATURES.get('ENABLE_MOBILE_REST_API'):
     urlpatterns += [
-        re_path(r'^api/mobile/(?P<api_version>v(3|2|1|0.5))/', include('lms.djangoapps.mobile_api.urls')),
+        re_path(r'^api/mobile/(?P<api_version>v(4|3|2|1|0.5))/', include('lms.djangoapps.mobile_api.urls')),
     ]
 
 urlpatterns += [
@@ -230,6 +227,14 @@ urlpatterns += [
 
 urlpatterns += [
     path('support/', include('lms.djangoapps.support.urls')),
+    # Support API RESTful endpoints
+    path(
+        'api/support/',
+        include(
+            ('lms.djangoapps.support.rest_api.urls', 'lms.djangoapps.support'),
+            namespace='support_api',
+        )
+    ),
 ]
 
 # Favicon
@@ -339,7 +344,7 @@ urlpatterns += [
         name='xblock_resource_url',
     ),
 
-    # New (Learning-Core-based) XBlock REST API
+    # New XBlock REST API, based on the openedx_content API
     path('', include(('openedx.core.djangoapps.xblock.rest_api.urls', 'openedx.core.djangoapps.xblock'),
                      namespace='xblock_api')),
 
@@ -349,6 +354,14 @@ urlpatterns += [
         ),
         xqueue_callback,
         name='xqueue_callback',
+    ),
+
+    re_path(
+        r'^courses/{}/xqueue/(?P<userid>[^/]*)/(?P<mod_id>.*?)/(?P<dispatch>[^/]*)$'.format(
+            settings.COURSE_ID_PATTERN,
+        ),
+        xqueue_callback,
+        name='callback_submission',
     ),
 
     # TODO: These views need to be updated before they work
@@ -477,21 +490,21 @@ urlpatterns += [
         name='courseware',
     ),
     re_path(
-        r'^courses/{}/courseware/(?P<chapter>[^/]*)/$'.format(
-            settings.COURSE_ID_PATTERN,
-        ),
-        CoursewareIndex.as_view(),
-        name='courseware_chapter',
-    ),
-    re_path(
-        r'^courses/{}/courseware/(?P<chapter>[^/]*)/(?P<section>[^/]*)/$'.format(
+        r'^courses/{}/courseware/(?P<section>[^/]*)/$'.format(
             settings.COURSE_ID_PATTERN,
         ),
         CoursewareIndex.as_view(),
         name='courseware_section',
     ),
     re_path(
-        r'^courses/{}/courseware/(?P<chapter>[^/]*)/(?P<section>[^/]*)/(?P<position>[^/]*)/?$'.format(
+        r'^courses/{}/courseware/(?P<section>[^/]*)/(?P<subsection>[^/]*)/$'.format(
+            settings.COURSE_ID_PATTERN,
+        ),
+        CoursewareIndex.as_view(),
+        name='courseware_subsection',
+    ),
+    re_path(
+        r'^courses/{}/courseware/(?P<section>[^/]*)/(?P<subsection>[^/]*)/(?P<position>[^/]*)/?$'.format(
             settings.COURSE_ID_PATTERN,
         ),
         CoursewareIndex.as_view(),
@@ -661,12 +674,6 @@ urlpatterns += [
         include('openedx.features.calendar_sync.urls'),
     ),
 
-    # Learner profile
-    path(
-        'u/',
-        include('openedx.features.learner_profile.urls'),
-    ),
-
     # Survey Report
     re_path(
         fr'^survey_report/',
@@ -830,16 +837,15 @@ urlpatterns += [
     path('survey/', include('lms.djangoapps.survey.urls')),
 ]
 
-if settings.FEATURES.get('ENABLE_OAUTH2_PROVIDER'):
-    urlpatterns += [
-        # These URLs dispatch to django-oauth-toolkit or django-oauth2-provider as appropriate.
-        # Developers should use these routes, to maintain compatibility for existing client code
-        path('oauth2/', include('openedx.core.djangoapps.oauth_dispatch.urls')),
-        # The /_o/ prefix exists to provide a target for code in django-oauth-toolkit that
-        # uses reverse() with the 'oauth2_provider' namespace.  Developers should not access these
-        # views directly, but should rather use the wrapped views at /oauth2/
-        path('_o/', include('oauth2_provider.urls', namespace='oauth2_provider')),
-    ]
+urlpatterns += [
+    # These URLs dispatch to django-oauth-toolkit or django-oauth2-provider as appropriate.
+    # Developers should use these routes, to maintain compatibility for existing client code
+    path('oauth2/', include('openedx.core.djangoapps.oauth_dispatch.urls')),
+    # The /_o/ prefix exists to provide a target for code in django-oauth-toolkit that
+    # uses reverse() with the 'oauth2_provider' namespace.  Developers should not access these
+    # views directly, but should rather use the wrapped views at /oauth2/
+    path('_o/', include('oauth2_provider.urls', namespace='oauth2_provider')),
+]
 
 if settings.FEATURES.get('ENABLE_SERVICE_STATUS'):
     urlpatterns += [
@@ -875,17 +881,17 @@ if settings.FEATURES.get('ENABLE_THIRD_PARTY_AUTH'):
 if enterprise_enabled():
     urlpatterns += [
         path('', include('enterprise.urls')),
+        path('', include('channel_integrations.urls')),
     ]
 
 # OAuth token exchange
-if settings.FEATURES.get('ENABLE_OAUTH2_PROVIDER'):
-    urlpatterns += [
-        path(
-            'oauth2/login/',
-            LoginWithAccessTokenView.as_view(),
-            name='login_with_access_token'
-        ),
-    ]
+urlpatterns += [
+    path(
+        'oauth2/login/',
+        LoginWithAccessTokenView.as_view(),
+        name='login_with_access_token'
+    ),
+]
 
 # Certificates
 urlpatterns += [
@@ -917,7 +923,6 @@ if settings.FEATURES.get('ENABLE_LTI_PROVIDER'):
 urlpatterns += [
     path('config/programs', ConfigurationModelCurrentAPIView.as_view(model=ProgramsApiConfig)),
     path('config/catalog', ConfigurationModelCurrentAPIView.as_view(model=CatalogIntegration)),
-    path('config/forums', ConfigurationModelCurrentAPIView.as_view(model=ForumsConfig)),
 ]
 
 if settings.DEBUG:
@@ -1055,4 +1060,8 @@ urlpatterns += [
 
 urlpatterns += [
     path('api/notifications/', include('openedx.core.djangoapps.notifications.urls')),
+]
+
+urlpatterns += [
+    path('xqueue/', include((submissions_urls, 'submissions'), namespace='submissions')),
 ]

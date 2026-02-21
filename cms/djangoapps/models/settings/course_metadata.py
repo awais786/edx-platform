@@ -14,6 +14,7 @@ from xblock.fields import Scope
 
 from cms.djangoapps.contentstore import toggles
 from common.djangoapps.util.db import MYSQL_MAX_INT, generate_int_id
+from common.djangoapps.util.proctoring import requires_escalation_email
 from common.djangoapps.xblock_django.models import XBlockStudioConfigurationFlag
 from openedx.core.djangoapps.course_apps.toggles import exams_ida_enabled
 from openedx.core.djangoapps.discussions.config.waffle_utils import legacy_discussion_experience_enabled
@@ -82,6 +83,10 @@ class CourseMetadata:
         'is_onboarding_exam',
         'discussions_settings',
         'copied_from_block',
+        "upstream",
+        "upstream_version",
+        "upstream_version_declined",
+        "upstream_display_name",
     ]
 
     @classmethod
@@ -140,10 +145,15 @@ class CourseMetadata:
         if not COURSE_ENABLE_UNENROLLED_ACCESS_FLAG.is_enabled(course_key=course_key):
             exclude_list.append('course_visibility')
 
-        # Do not show "Proctortrack Exam Escalation Contact" if Proctortrack is not
-        # an available proctoring backend.
-        if not settings.PROCTORING_BACKENDS or settings.PROCTORING_BACKENDS.get('proctortrack') is None:
-            exclude_list.append('proctoring_escalation_email')
+        # Do not show "Proctoring Exam Escalation Contact" if 'requires_escalation_email'
+        # is not set on any of the the proctoring backends.
+        escalation_email_required = False
+        for provider in get_available_providers():
+            if requires_escalation_email(provider):
+                escalation_email_required = True
+                break
+        if not escalation_email_required:
+            exclude_list.append("proctoring_escalation_email")
 
         if not legacy_discussion_experience_enabled(course_key):
             exclude_list.append('discussion_blackouts')
@@ -217,7 +227,10 @@ class CourseMetadata:
             try:
                 val = model['value']
                 if hasattr(block, key) and getattr(block, key) != val:
-                    key_values[key] = block.fields[key].from_json(val)
+                    if key == 'proctoring_provider':
+                        key_values[key] = block.fields[key].from_json(val, validate_providers=True)
+                    else:
+                        key_values[key] = block.fields[key].from_json(val)
             except (TypeError, ValueError) as err:
                 raise ValueError(_("Incorrect format for field '{name}'. {detailed_message}").format(  # lint-amnesty, pylint: disable=raise-missing-from
                     name=model['display_name'], detailed_message=str(err)))
@@ -253,7 +266,10 @@ class CourseMetadata:
             try:
                 val = model['value']
                 if hasattr(block, key) and getattr(block, key) != val:
-                    key_values[key] = block.fields[key].from_json(val)
+                    if key == 'proctoring_provider':
+                        key_values[key] = block.fields[key].from_json(val, validate_providers=True)
+                    else:
+                        key_values[key] = block.fields[key].from_json(val)
             except (TypeError, ValueError, ValidationError) as err:
                 did_validate = False
                 errors.append({'key': key, 'message': str(err), 'model': model})
@@ -484,20 +500,33 @@ class CourseMetadata:
             enable_proctoring = block.enable_proctored_exams
 
         if enable_proctoring:
-            # Require a valid escalation email if Proctortrack is chosen as the proctoring provider
-            escalation_email_model = settings_dict.get('proctoring_escalation_email')
-            if escalation_email_model:
-                escalation_email = escalation_email_model.get('value')
-            else:
-                escalation_email = block.proctoring_escalation_email
 
             if proctoring_provider_model:
                 proctoring_provider = proctoring_provider_model.get('value')
             else:
                 proctoring_provider = block.proctoring_provider
 
+            # If the proctoring provider stored in the course block no longer
+            # matches the available providers for this instance, show an error
+            if proctoring_provider not in available_providers:
+                message = (
+                    f'The proctoring provider configured for this course, \'{proctoring_provider}\', is not valid.'
+                )
+                errors.append({
+                    'key': 'proctoring_provider',
+                    'message': message,
+                    'model': proctoring_provider_model
+                })
+
+            # Require a valid escalation email if 'requires_escalation_email' is set in the proctoring backend
+            escalation_email_model = settings_dict.get('proctoring_escalation_email')
+            if escalation_email_model:
+                escalation_email = escalation_email_model.get('value')
+            else:
+                escalation_email = block.proctoring_escalation_email
+
             missing_escalation_email_msg = 'Provider \'{provider}\' requires an exam escalation contact.'
-            if proctoring_provider_model and proctoring_provider == 'proctortrack':
+            if proctoring_provider_model and requires_escalation_email(proctoring_provider):
                 if not escalation_email:
                     message = missing_escalation_email_msg.format(provider=proctoring_provider)
                     errors.append({
@@ -508,7 +537,7 @@ class CourseMetadata:
 
             if (
                 escalation_email_model and not proctoring_provider_model and
-                proctoring_provider == 'proctortrack'
+                requires_escalation_email(proctoring_provider)
             ):
                 if not escalation_email:
                     message = missing_escalation_email_msg.format(provider=proctoring_provider)
@@ -525,10 +554,7 @@ class CourseMetadata:
             else:
                 create_zendesk_tickets = block.create_zendesk_tickets
 
-            if (
-                (proctoring_provider == 'proctortrack' and create_zendesk_tickets)
-                or (proctoring_provider == 'software_secure' and not create_zendesk_tickets)
-            ):
+            if proctoring_provider == 'software_secure' and not create_zendesk_tickets:
                 LOGGER.info(
                     'create_zendesk_tickets set to {ticket_value} but proctoring '
                     'provider is {provider} for course {course_id}. create_zendesk_tickets '

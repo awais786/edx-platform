@@ -13,6 +13,7 @@ from shutil import rmtree
 from tempfile import mkdtemp
 from uuid import uuid4
 from unittest.mock import Mock, call, patch
+from zoneinfo import ZoneInfo
 
 import ddt
 from openedx_events.content_authoring.data import CourseData, XBlockData
@@ -32,7 +33,6 @@ import pytest
 from django.conf import settings
 from opaque_keys.edx.keys import CourseKey
 from opaque_keys.edx.locator import BlockUsageLocator, CourseLocator, LibraryLocator  # pylint: disable=unused-import
-from pytz import UTC
 from web_fragments.fragment import Fragment
 from xblock.core import XBlockAside
 from xblock.fields import Scope, ScopeIds, String
@@ -63,6 +63,7 @@ from xmodule.modulestore.xml_exporter import export_course_to_xml
 from xmodule.modulestore.xml_importer import LocationMixin, import_course_from_xml
 from xmodule.tests import DATA_DIR, CourseComparisonTest
 from xmodule.x_module import XModuleMixin
+from common.test.utils import assert_dict_contains_subset
 
 if not settings.configured:
     settings.configure()
@@ -156,14 +157,74 @@ class CommonMixedModuleStoreSetup(CourseComparisonTest, OpenEdxEventsTestMixin):
             tz_aware=True,
         )
         self.connection.drop_database(self.DB)
-        self.addCleanup(self.connection.drop_database, self.DB)
-        self.addCleanup(self.connection.close)
+        self.addCleanup(self._drop_database)
+        self.addCleanup(self._close_connection)
 
         # define attrs which get set in initdb to quell pylint
         self.writable_chapter_location = self.store = self.fake_location = None
         self.course_locations = {}
 
         self.user_id = ModuleStoreEnum.UserID.test
+        # mock and ignore publishable link entity related tasks to avoid unnecessary
+        # errors as it is tested separately
+        if settings.ROOT_URLCONF == 'cms.urls':
+            create_xblock_upstream_link_patch = patch(
+                'cms.djangoapps.contentstore.signals.handlers.handle_create_xblock_upstream_link'
+            )
+            create_xblock_upstream_link_patch.start()
+            self.addCleanup(create_xblock_upstream_link_patch.stop)
+            update_xblock_upstream_link_patch = patch(
+                'cms.djangoapps.contentstore.signals.handlers.handle_update_xblock_upstream_link'
+            )
+            update_xblock_upstream_link_patch.start()
+            self.addCleanup(update_xblock_upstream_link_patch.stop)
+            component_link_patch = patch(
+                'cms.djangoapps.contentstore.signals.handlers.ComponentLink'
+            )
+            component_link_patch.start()
+            self.addCleanup(component_link_patch.stop)
+            container_link_patch = patch(
+                'cms.djangoapps.contentstore.signals.handlers.ContainerLink'
+            )
+            container_link_patch.start()
+            self.addCleanup(container_link_patch.stop)
+
+    def _check_connection(self):
+        """
+        Check mongodb connection is open or not.
+        """
+        try:
+            self.connection.admin.command('ping')
+            return True
+        except pymongo.errors.InvalidOperation:
+            return False
+
+    def _ensure_connection(self):
+        """
+        Make sure that mongodb connection is open.
+        """
+        if not self._check_connection():
+            self.connection = pymongo.MongoClient(
+                host=self.HOST,
+                port=self.PORT,
+                tz_aware=True,
+            )
+
+    def _drop_database(self):
+        """
+        Drop mongodb database.
+        """
+        self._ensure_connection()
+        self.connection.drop_database(self.DB)
+
+    def _close_connection(self):
+        """
+        Close mongodb connection.
+        """
+        try:
+            self.connection.close()
+        except pymongo.errors.InvalidOperation:
+            pass
 
     def _create_course(self, course_key, asides=None):
         """
@@ -753,7 +814,8 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
 
         event_receiver.assert_called()
 
-        self.assertDictContainsSubset(
+        assert_dict_contains_subset(
+            self,
             {
                 "signal": COURSE_CREATED,
                 "sender": None,
@@ -761,7 +823,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
                     course_key=test_course.id,
                 ),
             },
-            event_receiver.call_args.kwargs
+            event_receiver.call_args.kwargs,
         )
 
     @ddt.data(ModuleStoreEnum.Type.split)
@@ -831,7 +893,8 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
         self.store.publish(sequential.location, self.user_id)
 
         event_receiver.assert_called()
-        self.assertDictContainsSubset(
+        assert_dict_contains_subset(
+            self,
             {
                 "signal": XBLOCK_PUBLISHED,
                 "sender": None,
@@ -840,7 +903,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
                     block_type=sequential.location.block_type,
                 ),
             },
-            event_receiver.call_args.kwargs
+            event_receiver.call_args.kwargs,
         )
 
     @ddt.data(ModuleStoreEnum.Type.split)
@@ -865,7 +928,8 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
         self.store.delete_item(vertical.location, self.user_id)
 
         event_receiver.assert_called()
-        self.assertDictContainsSubset(
+        assert_dict_contains_subset(
+            self,
             {
                 "signal": XBLOCK_DELETED,
                 "sender": None,
@@ -874,7 +938,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
                     block_type=vertical.location.block_type,
                 ),
             },
-            event_receiver.call_args.kwargs
+            event_receiver.call_args.kwargs,
         )
 
     def setup_has_changes(self, default_ms):
@@ -1715,7 +1779,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
             for location, expected in should_work:
                 # each iteration has different find count, pop this iter's find count
                 with check_mongo_calls(num_finds.pop(0), num_sends), self.assertNumQueries(num_mysql.pop(0)):
-                    path = path_to_location(self.store, location)
+                    path = path_to_location(self.store, location, branch_type=ModuleStoreEnum.Branch.published_only)
                     assert path == expected
 
         not_found = (
@@ -1979,7 +2043,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
             'problem'
         )
         assert self.user_id == block.edited_by
-        assert datetime.datetime.now(UTC) > block.edited_on
+        assert datetime.datetime.now(ZoneInfo("UTC")) > block.edited_on
 
     @ddt.data(ModuleStoreEnum.Type.split)
     def test_create_item_populates_subtree_edited_info(self, default_ms):
@@ -1990,7 +2054,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
             'problem'
         )
         assert self.user_id == block.subtree_edited_by
-        assert datetime.datetime.now(UTC) > block.subtree_edited_on
+        assert datetime.datetime.now(ZoneInfo("UTC")) > block.subtree_edited_on
 
     # Split: wildcard search of draft (find) and split (mysql)
     @ddt.data((ModuleStoreEnum.Type.split, 1, 1, 0))
@@ -2138,7 +2202,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
                 block_id='test_html_no_change'
             )
 
-        after_create = datetime.datetime.now(UTC)
+        after_create = datetime.datetime.now(ZoneInfo("UTC"))
         # Verify that all nodes were last edited in the past by create_user
         for block in [component, child, sibling]:
             check_node(block.location, None, after_create, self.user_id, None, after_create, self.user_id)
@@ -2149,7 +2213,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
         editing_user = self.user_id - 2
         with self.store.bulk_operations(test_course.id):  # TNL-764 bulk ops disabled ancestor updates
             component = self.store.update_item(component, editing_user)
-        after_edit = datetime.datetime.now(UTC)
+        after_edit = datetime.datetime.now(ZoneInfo("UTC"))
         check_node(component.location, after_create, after_edit, editing_user, after_create, after_edit, editing_user)
         # but child didn't change
         check_node(child.location, None, after_create, self.user_id, None, after_create, self.user_id)
@@ -2159,7 +2223,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
         child.display_name = 'Changed Display Name'
         self.store.update_item(child, user_id=editing_user)
 
-        after_edit = datetime.datetime.now(UTC)
+        after_edit = datetime.datetime.now(ZoneInfo("UTC"))
 
         # Verify that child was last edited between after_create and after_edit by edit_user
         check_node(child.location, after_create, after_edit, editing_user, after_create, after_edit, editing_user)
@@ -2219,7 +2283,7 @@ class TestMixedModuleStore(CommonMixedModuleStoreSetup):
         )
 
         # Store the current time, then publish
-        old_time = datetime.datetime.now(UTC)
+        old_time = datetime.datetime.now(ZoneInfo("UTC"))
         self.store.publish(component.location, publish_user)
         updated_component = self.store.get_item(component.location)
 
@@ -3285,7 +3349,7 @@ class TestPublishOverExportImport(CommonMixedModuleStoreSetup):
 
     @ddt.data(ModuleStoreEnum.Type.split)
     @XBlockAside.register_temp_plugin(AsideTestType, 'test_aside')
-    @patch('xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types',
+    @patch('xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types',
            lambda self, block: ['test_aside'])
     def test_aside_crud(self, default_store):
         """
@@ -3359,7 +3423,7 @@ class TestPublishOverExportImport(CommonMixedModuleStoreSetup):
 
     @ddt.data(ModuleStoreEnum.Type.split)
     @XBlockAside.register_temp_plugin(AsideTestType, 'test_aside')
-    @patch('xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types',
+    @patch('xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types',
            lambda self, block: ['test_aside'])
     def test_export_course_with_asides(self, default_store):
         if default_store == ModuleStoreEnum.Type.mongo:
@@ -3446,7 +3510,7 @@ class TestPublishOverExportImport(CommonMixedModuleStoreSetup):
 
     @ddt.data(ModuleStoreEnum.Type.split)
     @XBlockAside.register_temp_plugin(AsideTestType, 'test_aside')
-    @patch('xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types',
+    @patch('xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types',
            lambda self, block: ['test_aside'])
     def test_export_course_after_creating_new_items_with_asides(self, default_store):  # pylint: disable=too-many-statements
         if default_store == ModuleStoreEnum.Type.mongo:
@@ -3581,7 +3645,7 @@ class TestAsidesWithMixedModuleStore(CommonMixedModuleStoreSetup):
     @ddt.data(ModuleStoreEnum.Type.split)
     @XBlockAside.register_temp_plugin(AsideFoo, 'test_aside1')
     @XBlockAside.register_temp_plugin(AsideBar, 'test_aside2')
-    @patch('xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types',
+    @patch('xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types',
            lambda self, block: ['test_aside1', 'test_aside2'])
     def test_get_and_update_asides(self, default_store):
         """
@@ -3645,7 +3709,7 @@ class TestAsidesWithMixedModuleStore(CommonMixedModuleStoreSetup):
 
     @ddt.data(ModuleStoreEnum.Type.split)
     @XBlockAside.register_temp_plugin(AsideFoo, 'test_aside1')
-    @patch('xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types',
+    @patch('xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types',
            lambda self, block: ['test_aside1'])
     def test_clone_course_with_asides(self, default_store):
         """
@@ -3693,7 +3757,7 @@ class TestAsidesWithMixedModuleStore(CommonMixedModuleStoreSetup):
 
     @ddt.data(ModuleStoreEnum.Type.split)
     @XBlockAside.register_temp_plugin(AsideFoo, 'test_aside1')
-    @patch('xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types',
+    @patch('xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types',
            lambda self, block: ['test_aside1'])
     def test_delete_item_with_asides(self, default_store):
         """
@@ -3742,7 +3806,7 @@ class TestAsidesWithMixedModuleStore(CommonMixedModuleStoreSetup):
 
     @ddt.data((ModuleStoreEnum.Type.split, 1, 0))
     @XBlockAside.register_temp_plugin(AsideFoo, 'test_aside1')
-    @patch('xmodule.modulestore.split_mongo.caching_descriptor_system.CachingDescriptorSystem.applicable_aside_types',
+    @patch('xmodule.modulestore.split_mongo.runtime.SplitModuleStoreRuntime.applicable_aside_types',
            lambda self, block: ['test_aside1'])
     @ddt.unpack
     def test_published_and_unpublish_item_with_asides(self, default_store, max_find, max_send):

@@ -5,22 +5,24 @@ Open edX Platform
 .. |License: AGPL v3| image:: https://img.shields.io/badge/License-AGPL_v3-blue.svg
   :target: https://www.gnu.org/licenses/agpl-3.0
 
-.. |Python CI| image:: https://github.com/openedx/edx-platform/actions/workflows/unit-tests.yml/badge.svg
-  :target: https://github.com/openedx/edx-platform/actions/workflows/unit-tests.yml
+.. |Python CI| image:: https://github.com/openedx/openedx-platform/actions/workflows/unit-tests.yml/badge.svg
+  :target: https://github.com/openedx/openedx-platform/actions/workflows/unit-tests.yml
 
 .. |Status| image:: https://img.shields.io/badge/status-maintained-31c653
 
+*Formerly known as "edx-platform"*
+
 Purpose
 *******
-The `Open edX Platform <https://openedx.org>`_ is a service-oriented platform for authoring and
-delivering online learning at any scale.  The platform is written in
+The `Open edX Platform <https://openedx.org>`_ enables the authoring and
+delivery of online learning at any scale.  The platform is written in
 Python and JavaScript and makes extensive use of the Django
 framework. At the highest level, the platform is composed of a
-monolith, some independently deployable applications (IDAs), and
+modular monolith, some independently deployable applications (IDAs), and
 micro-frontends (MFEs) based on the ReactJS.
 
 This repository hosts the monolith at the center of the Open edX
-platform.  Functionally, the edx-platform repository provides two services:
+platform.  Functionally, the openedx-platform repository provides two services:
 
 * CMS (Content Management Service), which powers Open edX Studio, the platform's learning content authoring environment; and
 * LMS (Learning Management Service), which delivers learning content.
@@ -53,7 +55,7 @@ For Development
 ===============
 
 Tutor also features a `development mode`_ which will also help you modify,
-test, and extend edx-platform. We recommend this method for all Open edX
+test, and extend openedx-platform. We recommend this method for all Open edX
 developers.
 
 Bare Metal (Advanced)
@@ -70,11 +72,15 @@ complexity of Open edX configuration and deployment into their own hands.
 System Dependencies
 -------------------
 
-Interperters/Tools:
+OS:
 
-* Python 3.11
+* Ubuntu 24.04
 
-* Node 18
+Interpreters/Tools:
+
+* Python 3.11 or 3.12
+
+* Node: See the ``.nvmrc`` file in this repository.
 
 Services:
 
@@ -98,7 +104,18 @@ Language Packages:
 * Backend application:
 
   - ``pip install -r requirements/edx/base.txt`` (production)
-  - ``pip install -r requirements/edx/dev.txt`` (development)
+  - ``pip install -r requirements/edx/development.txt`` (development)
+
+  Some Python packages have system dependencies. For example, installing these packages on Debian or Ubuntu will require first running ``sudo apt install python3-dev default-libmysqlclient-dev build-essential pkg-config`` to satisfy the requirements of the ``mysqlclient`` Python package.
+
+Codejail Setup
+--------------
+
+As a part of the baremetal setup, you will need to configure your system to
+work properly with codejail.  See the `codejail installation steps`_ for more
+details.
+
+.. _codejail installation steps: https://github.com/openedx/codejail?tab=readme-ov-file#installation
 
 Build Steps
 -----------
@@ -124,31 +141,94 @@ sites)::
   ./manage.py lms collectstatic
   ./manage.py cms collectstatic
 
+Set up CMS SSO (for Development)::
+
+  ./manage.py lms manage_user studio_worker example@example.com --unusable-password
+  # DO NOT DO THIS IN PRODUCTION. It will make your auth insecure.
+  ./manage.py lms create_dot_application studio-sso-id studio_worker \
+      --grant-type authorization-code \
+      --skip-authorization \
+      --redirect-uris 'http://localhost:18010/complete/edx-oauth2/' \
+      --scopes user_id  \
+      --client-id 'studio-sso-id' \
+      --client-secret 'studio-sso-secret'
+
+Set up CMS SSO (for Production):
+
+* Create the CMS user and the OAuth application::
+
+    ./manage.py lms manage_user studio_worker <email@yourcompany.com> --unusable-password
+    ./manage.py lms create_dot_application studio-sso-id studio_worker \
+        --grant-type authorization-code \
+        --skip-authorization \
+        --redirect-uris 'http://localhost:18010/complete/edx-oauth2/' \
+        --scopes user_id
+
+* Log into Django admin (eg. http://localhost:18000/admin/oauth2_provider/application/),
+  click into the application you created above (``studio-sso-id``), and copy its "Client secret".
+* In your private LMS_CFG yaml file or your private Django settings module:
+
+ * Set ``SOCIAL_AUTH_EDX_OAUTH2_KEY`` to the client ID (``studio-sso-id``).
+ * Set ``SOCIAL_AUTH_EDX_OAUTH2_SECRET`` to the client secret (which you copied).
+
 Run the Platform
 ----------------
+
+Startup the Platform
+====================
 
 First, ensure MySQL, Mongo, and Memcached are running.
 
 Start the LMS::
 
-  ./manage.py lms runserver
+  ./manage.py lms runserver 18000
 
 Start the CMS::
 
-  ./manage.py cms runserver
+  ./manage.py cms runserver 18010
 
 This will give you a mostly-headless Open edX platform. Most frontends have
 been migrated to "Micro-Frontends (MFEs)" which need to be installed and run
-separately. At a bare minimum, you will need to run the `Authentication MFE`_,
+separately. At a bare minimum, you will need to run the `Authoring MFE`_,
 `Learner Home MFE`_, and `Learning MFE`_ in order meaningfully navigate the UI.
+A full list of the MFEs expected to run by default are listed below.
 
 .. _Tutor: https://github.com/overhangio/tutor
 .. _Site Ops home on docs.openedx.org: https://docs.openedx.org/en/latest/site_ops/index.html
 .. _development mode: https://docs.tutor.edly.io/dev.html
 .. _building static assets: ./docs/references/static-assets.rst
-.. _Authentication MFE: https://github.com/openedx/frontend-app-authn/
 .. _Learner Home MFE: https://github.com/openedx/frontend-app-learner-dashboard
 .. _Learning MFE: https://github.com/openedx/frontend-app-learning/
+.. _Authoring MFE: https://github.com/openedx/frontend-app-authoring/
+
+Expected MFEs and Default Ports
+-------------------------------
+
+Currently the following MFEs are enabled by default, and are expected to be
+running at the given ports.
+
+.. list-table::
+   :header-rows: 1
+
+
+   * - Service Name
+     - Expected Location
+     - Override Setting Name
+   * - frontend-app-authoring
+     - localhost:2001
+     - COURSE_AUTHORING_MICROFRONTEND_URL
+   * - frontend-app-learning
+     - localhost:2000
+     - LEARNING_MICROFRONTEND_URL
+   * - frontend-app-learner-dashboard
+     - localhost:1996
+     - LEARNER_HOME_MICROFRONTEND_URL
+   * - frontend-app-profile
+     - localhost:1995
+     - PROFILE_MICROFRONTEND_URL
+   * - frontend-app-account
+     - localhost:1997
+     - ACCOUNT_MICROFRONTEND_URL
 
 License
 *******
@@ -156,7 +236,7 @@ License
 The code in this repository is licensed under version 3 of the AGPL
 unless otherwise noted. Please see the `LICENSE`_ file for details.
 
-.. _LICENSE: https://github.com/openedx/edx-platform/blob/master/LICENSE
+.. _LICENSE: https://github.com/openedx/openedx-platform/blob/master/LICENSE
 
 
 More about Open edX
@@ -193,8 +273,8 @@ We use Github Issues for our issue tracker. You can search
 `previously reported issues`_.  If you need to report a bug, or want to discuss
 a new feature before you implement it, please `create a new issue`_.
 
-.. _previously reported issues: https://github.com/openedx/edx-platform/issues
-.. _create a new issue: https://github.com/openedx/edx-platform/issues/new/choose
+.. _previously reported issues: https://github.com/openedx/openedx-platform/issues
+.. _create a new issue: https://github.com/openedx/openedx-platform/issues/new/choose
 
 
 How to Contribute
@@ -228,5 +308,4 @@ People
 
 The current maintainers of this repository can be found on `Backstage`_.
 
-.. _Backstage: https://backstage.openedx.org/catalog/default/component/edx-platform
-
+.. _Backstage: https://backstage.openedx.org/catalog/default/component/openedx-platform

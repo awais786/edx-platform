@@ -3,13 +3,13 @@ Unit tests for behavior that is specific to the api methods (vs. the view method
 Most of the functionality is covered in test_views.py.
 """
 
-
 import datetime
 import itertools
 import unicodedata
 from unittest.mock import Mock, patch
-import pytest
+
 import ddt
+import pytest
 from django.conf import settings
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import User  # lint-amnesty, pylint: disable=imported-auth-user
@@ -17,8 +17,9 @@ from django.http import HttpResponse
 from django.test import TestCase
 from django.test.client import RequestFactory
 from django.urls import reverse
-from pytz import UTC
+from zoneinfo import ZoneInfo
 from social_django.models import UserSocialAuth
+
 from common.djangoapps.student.models import (
     AccountRecovery,
     PendingEmailChange,
@@ -28,14 +29,14 @@ from common.djangoapps.student.models import (
 from common.djangoapps.student.tests.factories import UserFactory
 from common.djangoapps.student.tests.tests import UserSettingsEventTestMixin
 from common.djangoapps.student.views.management import activate_secondary_email
-
 from lms.djangoapps.certificates.data import CertificateStatuses
 from openedx.core.djangoapps.ace_common.tests.mixins import EmailTemplateTagMixin
+from openedx.core.djangoapps.embargo.models import Country, GlobalRestrictedCountry
 from openedx.core.djangoapps.user_api.accounts import PRIVATE_VISIBILITY
 from openedx.core.djangoapps.user_api.accounts.api import (
     get_account_settings,
-    update_account_settings,
-    get_name_validation_error
+    get_name_validation_error,
+    update_account_settings
 )
 from openedx.core.djangoapps.user_api.accounts.tests.retirement_helpers import (  # pylint: disable=unused-import
     RetirementTestCase,
@@ -82,7 +83,8 @@ class CreateAccountMixin:  # lint-amnesty, pylint: disable=missing-class-docstri
 
 @skip_unless_lms
 @ddt.ddt
-@patch('common.djangoapps.student.views.management.render_to_response', Mock(side_effect=mock_render_to_response, autospec=True))  # lint-amnesty, pylint: disable=line-too-long
+@patch('common.djangoapps.student.views.management.render_to_response',
+       Mock(side_effect=mock_render_to_response, autospec=True))  # lint-amnesty, pylint: disable=line-too-long
 class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAccountMixin, RetirementTestCase):
     """
     These tests specifically cover the parts of the API methods that are not covered by test_views.py.
@@ -185,7 +187,7 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
     def test_set_multiple_social_links(self):
         social_links = [
             dict(platform="facebook", social_link=f"https://www.facebook.com/{self.user.username}"),
-            dict(platform="twitter", social_link=f"https://www.twitter.com/{self.user.username}"),
+            dict(platform="x", social_link=f"https://www.x.com/{self.user.username}"),
         ]
         update_account_settings(self.user, {"social_links": social_links})
         account_settings = get_account_settings(self.default_request)[0]
@@ -198,36 +200,36 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
         update_account_settings(self.user, {"social_links": original_social_links})
 
         extra_social_links = [
-            dict(platform="twitter", social_link=f"https://www.twitter.com/{self.user.username}"),
+            dict(platform="x", social_link=f"https://www.x.com/{self.user.username}"),
             dict(platform="linkedin", social_link=f"https://www.linkedin.com/in/{self.user.username}"),
         ]
         update_account_settings(self.user, {"social_links": extra_social_links})
 
         account_settings = get_account_settings(self.default_request)[0]
         assert account_settings['social_links'] == \
-            sorted((original_social_links + extra_social_links), key=(lambda s: s['platform']))
+               sorted((original_social_links + extra_social_links), key=(lambda s: s['platform']))
 
     def test_replace_social_links(self):
         original_facebook_link = dict(platform="facebook", social_link="https://www.facebook.com/myself")
-        original_twitter_link = dict(platform="twitter", social_link="https://www.twitter.com/myself")
-        update_account_settings(self.user, {"social_links": [original_facebook_link, original_twitter_link]})
+        original_x_link = dict(platform="x", social_link="https://www.x.com/myself")
+        update_account_settings(self.user, {"social_links": [original_facebook_link, original_x_link]})
 
         modified_facebook_link = dict(platform="facebook", social_link="https://www.facebook.com/new_me")
         update_account_settings(self.user, {"social_links": [modified_facebook_link]})
 
         account_settings = get_account_settings(self.default_request)[0]
-        assert account_settings['social_links'] == [modified_facebook_link, original_twitter_link]
+        assert account_settings['social_links'] == [modified_facebook_link, original_x_link]
 
     def test_remove_social_link(self):
         original_facebook_link = dict(platform="facebook", social_link="https://www.facebook.com/myself")
-        original_twitter_link = dict(platform="twitter", social_link="https://www.twitter.com/myself")
-        update_account_settings(self.user, {"social_links": [original_facebook_link, original_twitter_link]})
+        original_x_link = dict(platform="x", social_link="https://www.x.com/myself")
+        update_account_settings(self.user, {"social_links": [original_facebook_link, original_x_link]})
 
         removed_facebook_link = dict(platform="facebook", social_link="")
         update_account_settings(self.user, {"social_links": [removed_facebook_link]})
 
         account_settings = get_account_settings(self.default_request)[0]
-        assert account_settings['social_links'] == [original_twitter_link]
+        assert account_settings['social_links'] == [original_x_link]
 
     def test_unsupported_social_link_platform(self):
         social_links = [
@@ -306,7 +308,7 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
                 with pytest.raises(AccountValidationError) as validation_error:
                     update_account_settings(self.user, update_data)
                     field_errors = validation_error.value.field_errors
-                    assert 'This field is not editable via this API' ==\
+                    assert 'This field is not editable via this API' == \
                            field_errors[field_name_value[0]]['developer_message']
             else:
                 update_account_settings(self.user, update_data)
@@ -379,7 +381,7 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
         meta['old_names'] = []
         for num in range(3):
             meta['old_names'].append(
-                [f'old_name_{num}', 'test', datetime.datetime.now(UTC).isoformat()]
+                [f'old_name_{num}', 'test', datetime.datetime.now(ZoneInfo("UTC")).isoformat()]
             )
         user_profile.set_meta(meta)
         user_profile.save()
@@ -393,7 +395,8 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
             updated_meta = user_profile.get_meta()
             self.assertEqual(meta, updated_meta)
 
-    @patch('edx_name_affirmation.name_change_validator.NameChangeValidator.validate', Mock(return_value=False))
+    @patch('openedx.core.djangoapps.user_api.accounts.api._does_name_change_require_verification',
+           Mock(return_value=True))
     @patch('openedx.core.djangoapps.user_api.accounts.api.get_certificates_for_user',
            Mock(return_value=[{'status': CertificateStatuses.downloadable}]))
     @patch('openedx.core.djangoapps.user_api.accounts.api.get_verified_enrollments',
@@ -412,8 +415,6 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
         account_settings = get_account_settings(self.default_request)[0]
         assert account_settings['name'] != 'New Name'
 
-    @patch('edx_name_affirmation.name_change_validator.NameChangeValidator', Mock())
-    @patch('edx_name_affirmation.name_change_validator.NameChangeValidator.validate', Mock(return_value=True))
     @ddt.data(
         (True, False),
         (False, True),
@@ -424,8 +425,8 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
         """
         Test that the user can change their name if change does not require IDV.
         """
-        with patch('openedx.core.djangoapps.user_api.accounts.api.get_certificates_for_user') as mock_get_certs,\
-             patch('openedx.core.djangoapps.user_api.accounts.api.get_verified_enrollments') as \
+        with patch('openedx.core.djangoapps.user_api.accounts.api.get_certificates_for_user') as mock_get_certs, \
+            patch('openedx.core.djangoapps.user_api.accounts.api.get_verified_enrollments') as \
                 mock_get_verified_enrollments:
             mock_get_certs.return_value = (
                 [{'status': CertificateStatuses.downloadable}] if
@@ -439,7 +440,8 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
         assert account_settings['name'] == 'New Name'
 
     @patch('django.core.mail.EmailMultiAlternatives.send')
-    @patch('common.djangoapps.student.views.management.render_to_string', Mock(side_effect=mock_render_to_string, autospec=True))  # lint-amnesty, pylint: disable=line-too-long
+    @patch('common.djangoapps.student.views.management.render_to_string',
+           Mock(side_effect=mock_render_to_string, autospec=True))
     def test_update_sending_email_fails(self, send_mail):
         """Test what happens if all validation checks pass, but sending the email for email change fails."""
         send_mail.side_effect = [Exception, None]
@@ -514,6 +516,7 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
         """
         Test that eventing of language proficiencies, which happens update_account_settings method, behaves correctly.
         """
+
         def verify_event_emitted(new_value, old_value):
             """
             Confirm that the user setting event was properly emitted
@@ -570,6 +573,22 @@ class TestAccountApi(UserSettingsEventTestMixin, EmailTemplateTagMixin, CreateAc
         account_settings = get_account_settings(self.default_request)[0]
         assert account_settings['country'] is None
         assert account_settings['state'] is None
+
+    def test_change_to_disabled_country(self):
+        """
+        Test that changing the country to a disabled country is not allowed
+        """
+        # First set the country and state
+        country = Country.objects.create(country="KP")
+        GlobalRestrictedCountry.objects.create(country=country)
+
+        update_account_settings(self.user, {"country": UserProfile.COUNTRY_WITH_STATES, "state": "MA"})
+        account_settings = get_account_settings(self.default_request)[0]
+        assert account_settings['country'] == UserProfile.COUNTRY_WITH_STATES
+        assert account_settings['state'] == 'MA'
+
+        with self.assertRaises(AccountValidationError):
+            update_account_settings(self.user, {"country": "KP"})
 
     def test_get_name_validation_error_too_long(self):
         """

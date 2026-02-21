@@ -3,12 +3,19 @@ Test utils.py
 """
 import datetime
 import ddt
+import pytest
 
+from django.http.response import Http404
+from django.conf import settings
+from django.test.utils import override_settings
+from unittest.mock import patch
 from pytz import utc
-from waffle import get_waffle_flag_model   # pylint: disable=invalid-django-waffle-import
+from waffle import get_waffle_flag_model  # pylint: disable=invalid-django-waffle-import
 
 from common.djangoapps.student.tests.factories import UserFactory
+
 from openedx.core.djangoapps.notifications.config.waffle import ENABLE_EMAIL_NOTIFICATIONS
+from openedx.core.djangoapps.notifications.email import ONE_CLICK_EMAIL_UNSUB_KEY
 from openedx.core.djangoapps.notifications.models import Notification
 from openedx.core.djangoapps.notifications.email.utils import (
     add_additional_attributes_to_notifications,
@@ -16,10 +23,15 @@ from openedx.core.djangoapps.notifications.email.utils import (
     create_datetime_string,
     create_email_digest_context,
     create_email_template_context,
+    decrypt_string,
+    encrypt_string,
     get_course_info,
     get_time_ago,
+    get_unsubscribe_link,
     is_email_notification_flag_enabled,
+    update_user_preferences_from_patch,
 )
+from openedx.core.djangoapps.user_api.models import UserPreference
 from xmodule.modulestore.tests.django_utils import ModuleStoreTestCase
 from xmodule.modulestore.tests.factories import CourseFactory
 
@@ -30,6 +42,7 @@ class TestUtilFunctions(ModuleStoreTestCase):
     """
     Test utils functions
     """
+
     def setUp(self):
         """
         Setup
@@ -57,7 +70,7 @@ class TestUtilFunctions(ModuleStoreTestCase):
         """
         Notification.objects.all().delete()
         create_notification(self.user, self.course.id, app_name='discussion', notification_type='new_comment')
-        create_notification(self.user, self.course.id, app_name='updates', notification_type='course_update')
+        create_notification(self.user, self.course.id, app_name='updates', notification_type='course_updates')
         app_dict = create_app_notifications_dict(Notification.objects.all())
         assert len(app_dict.keys()) == 2
         for key in ['discussion', 'updates']:
@@ -81,8 +94,36 @@ class TestUtilFunctions(ModuleStoreTestCase):
         assert "1w" == get_time_ago(current_datetime - datetime.timedelta(days=7))
 
     def test_datetime_string(self):
+        """Test datetime is formatted as 'Weekday, Mon DD'."""
         dt = datetime.datetime(2024, 3, 25)
         assert create_datetime_string(dt) == "Monday, Mar 25"
+
+    def test_get_unsubscribe_link_uses_site_config(self):
+        """Test unsubscribe link uses site-configured MFE URL and encrypted username."""
+        with patch('openedx.core.djangoapps.notifications.email.utils.configuration_helpers.get_value',
+                   return_value='https://learning.siteconf') as mock_get_value, \
+             patch('openedx.core.djangoapps.notifications.email.utils.encrypt_string',
+                   return_value='ENC') as mock_encrypt:
+            url = get_unsubscribe_link(self.user.username)
+
+        assert url == 'https://learning.siteconf/preferences-unsubscribe/ENC/'
+        mock_get_value.assert_called_once_with('LEARNING_MICROFRONTEND_URL', settings.LEARNING_MICROFRONTEND_URL)
+        mock_encrypt.assert_called_once_with(self.user.username)
+
+    def test_get_unsubscribe_link_falls_back_to_settings(self):
+        """Test unsubscribe link falls back to settings when site config is absent."""
+        default_url = 'https://learning.default'
+
+        with override_settings(LEARNING_MICROFRONTEND_URL=default_url):
+            with patch('openedx.core.djangoapps.notifications.email.utils.configuration_helpers.get_value',
+                       side_effect=lambda k, d: d) as mock_get_value, \
+                 patch('openedx.core.djangoapps.notifications.email.utils.encrypt_string',
+                       return_value='ENC') as mock_encrypt:
+                url = get_unsubscribe_link(self.user.username)
+
+        assert url == f'{default_url}/preferences-unsubscribe/ENC/'
+        mock_get_value.assert_called_once_with('LEARNING_MICROFRONTEND_URL', default_url)
+        mock_encrypt.assert_called_once_with(self.user.username)
 
 
 @ddt.ddt
@@ -90,6 +131,7 @@ class TestContextFunctions(ModuleStoreTestCase):
     """
     Test template context functions in utils.py
     """
+
     def setUp(self):
         """
         Setup
@@ -102,8 +144,9 @@ class TestContextFunctions(ModuleStoreTestCase):
         """
         Tests common header and footer context
         """
-        context = create_email_template_context()
-        keys = ['platform_name', 'mailing_address', 'logo_url', 'social_media', 'notification_settings_url']
+        context = create_email_template_context(self.user.username)
+        keys = ['platform_name', 'mailing_address', 'logo_url', 'social_media',
+                'notification_settings_url', 'unsubscribe_url']
         for key in keys:
             assert key in context
 
@@ -116,11 +159,12 @@ class TestContextFunctions(ModuleStoreTestCase):
         discussion_notification = create_notification(self.user, self.course.id, app_name='discussion',
                                                       notification_type='new_comment')
         update_notification = create_notification(self.user, self.course.id, app_name='updates',
-                                                  notification_type='course_update')
+                                                  notification_type='course_updates')
         app_dict = create_app_notifications_dict(Notification.objects.all())
         end_date = datetime.datetime(2024, 3, 24, 12, 0)
         params = {
             "app_notifications_dict": app_dict,
+            "username": self.user.username,
             "start_date": end_date - datetime.timedelta(days=0 if digest_frequency == "Daily" else 6),
             "end_date": end_date,
             "digest_frequency": digest_frequency,
@@ -129,13 +173,25 @@ class TestContextFunctions(ModuleStoreTestCase):
         context = create_email_digest_context(**params)
         expected_start_date = 'Sunday, Mar 24' if digest_frequency == 'Daily' else 'Monday, Mar 18'
         expected_digest_updates = [
-            {'title': 'Total Notifications', 'count': 2},
-            {'title': 'Discussion', 'count': 1},
-            {'title': 'Updates', 'count': 1},
+            {'title': 'Total Notifications', 'translated_title': 'Total Notifications', 'count': 2},
+            {'title': 'Discussion', 'translated_title': 'Discussion', 'count': 1},
+            {'title': 'Updates', 'translated_title': 'Updates', 'count': 1},
         ]
         expected_email_content = [
-            {'title': 'Discussion', 'help_text': '', 'help_text_url': '', 'notifications': [discussion_notification]},
-            {'title': 'Updates', 'help_text': '', 'help_text_url': '', 'notifications': [update_notification]}
+            {
+                'title': 'Discussion', 'help_text': '', 'help_text_url': '',
+                'translated_title': 'Discussion',
+                'notifications': [discussion_notification],
+                'total': 1, 'show_remaining_count': False, 'remaining_count': 0,
+                'url': 'http://learner-home-mfe/?showNotifications=true&app=discussion'
+            },
+            {
+                'title': 'Updates', 'help_text': '', 'help_text_url': '',
+                'translated_title': 'Updates',
+                'notifications': [update_notification],
+                'total': 1, 'show_remaining_count': False, 'remaining_count': 0,
+                'url': 'http://learner-home-mfe/?showNotifications=true&app=updates'
+            }
         ]
         assert context['start_date'] == expected_start_date
         assert context['end_date'] == 'Sunday, Mar 24'
@@ -148,6 +204,7 @@ class TestWaffleFlag(ModuleStoreTestCase):
     """
     Test user level email notifications waffle flag
     """
+
     def setUp(self):
         """
         Setup
@@ -194,3 +251,54 @@ class TestWaffleFlag(ModuleStoreTestCase):
         assert is_email_notification_flag_enabled() is False
         assert is_email_notification_flag_enabled(self.user_1) is False
         assert is_email_notification_flag_enabled(self.user_2) is False
+
+
+class TestEncryption(ModuleStoreTestCase):
+    """
+    Tests all encryption methods
+    """
+
+    def test_string_encryption(self):
+        """
+        Tests if decrypted string is equal original string
+        """
+        string = "edx"
+        encrypted = encrypt_string(string)
+        decrypted = decrypt_string(encrypted)
+        assert string == decrypted
+
+
+@ddt.ddt
+class TestUpdatePreferenceFromPatch(ModuleStoreTestCase):
+    """
+    Tests if preferences are update according to patch data
+    this needs to be reimplemented as tests were removed in
+    """
+
+    def setUp(self):
+        """
+        Setup test cases
+        """
+        super().setUp()
+        self.user = UserFactory()
+        self.course_1 = CourseFactory.create(display_name='test course 1', run="Testing_course_1")
+        self.course_2 = CourseFactory.create(display_name='test course 2', run="Testing_course_2")
+
+    def test_preference_not_updated_if_invalid_username(self):
+        """
+        Tests if no preference is updated when username is not valid
+        """
+        username = f"{self.user.username}-updated"
+        enc_username = encrypt_string(username)
+        with pytest.raises(Http404):
+            update_user_preferences_from_patch(enc_username)
+
+    def test_user_preference_created_on_email_unsubscribe(self):
+        """
+        Test that the user's email unsubscribe preference is correctly created after unsubscribing digest email.
+        """
+        encrypted_username = encrypt_string(self.user.username)
+        update_user_preferences_from_patch(encrypted_username)
+        self.assertTrue(
+            UserPreference.objects.filter(user=self.user, key=ONE_CLICK_EMAIL_UNSUB_KEY).exists()
+        )

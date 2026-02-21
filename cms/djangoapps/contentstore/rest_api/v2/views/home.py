@@ -1,8 +1,7 @@
 """HomePageCoursesViewV2 APIView for getting content available to the logged in user."""
+
 import edx_api_doc_tools as apidocs
 from collections import OrderedDict
-from django.conf import settings
-from django.http import HttpResponseNotFound
 from rest_framework.response import Response
 from rest_framework.request import Request
 from rest_framework.views import APIView
@@ -16,6 +15,7 @@ from cms.djangoapps.contentstore.rest_api.v2.serializers import CourseHomeTabSer
 
 class HomePageCoursesPaginator(PageNumberPagination):
     """Custom paginator for the home page courses view version 2."""
+    page_size_query_param = 'page_size'
 
     def get_paginated_response(self, data):
         """Return a paginated style `Response` object for the given output data."""
@@ -78,6 +78,11 @@ class HomePageCoursesViewV2(APIView):
                 apidocs.ParameterLocation.QUERY,
                 description="Query param to paginate the courses",
             ),
+            apidocs.string_parameter(
+                "page_size",
+                apidocs.ParameterLocation.QUERY,
+                description="Query param to set page size",
+            ),
         ],
         responses={
             200: CourseHomeTabSerializerV2,
@@ -97,6 +102,7 @@ class HomePageCoursesViewV2(APIView):
             GET /api/contentstore/v2/home/courses?active_only=true
             GET /api/contentstore/v2/home/courses?archived_only=true
             GET /api/contentstore/v2/home/courses?page=2
+            GET /api/contentstore/v2/home/courses?page_size=20
 
         **Response Values**
 
@@ -126,13 +132,7 @@ class HomePageCoursesViewV2(APIView):
             "in_process_course_actions": [],
         }
         ```
-
-        if the `ENABLE_HOME_PAGE_COURSE_API_V2` feature flag is not enabled, an HTTP 404 "Not Found" response
-        is returned.
         """
-        if not settings.FEATURES.get('ENABLE_HOME_PAGE_COURSE_API_V2', False):
-            return HttpResponseNotFound()
-
         courses, in_process_course_actions = get_course_context_v2(request)
         paginator = HomePageCoursesPaginator()
         courses_page = paginator.paginate_queryset(

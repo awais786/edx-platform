@@ -305,7 +305,7 @@ def _update_social_context(request, context, course, user_certificate, platform_
     linkedin_config = LinkedInAddToProfileConfiguration.current()
     if linkedin_config.is_enabled():
         context['linked_in_url'] = linkedin_config.add_to_profile_url(
-            course.display_name, user_certificate.mode, smart_str(share_url), certificate=user_certificate
+            course, user_certificate.mode, smart_str(share_url), certificate=user_certificate
         )
 
 
@@ -351,30 +351,31 @@ def _get_user_certificate(request, user, course_key, course_overview, preview_mo
     """
     user_certificate = None
     if preview_mode:
-        # certificate is being previewed from studio
+        # The certificate is being previewed from the CMS. When previewing a certificate the "modified date" is
+        # displayed when rendered. We try to set the "modified date" of the artificial certificate record in such a way
+        # that it matches the date selection logic used by the system when rendering a "real" certificate instance. See
+        # the `display_date_for_certificate function` in the lms/djangoapps/certificates/api.py file.
         if request.user.has_perm(PREVIEW_CERTIFICATES, course_overview):
-            if not settings.FEATURES.get("ENABLE_V2_CERT_DISPLAY_SETTINGS"):
-                if course_overview.certificate_available_date and not course_overview.self_paced:
-                    modified_date = course_overview.certificate_available_date
-                else:
-                    modified_date = datetime.now().date()
+            if (
+                course_overview.certificates_display_behavior == CertificatesDisplayBehaviors.END_WITH_DATE
+                and course_overview.certificate_available_date
+                and not course_overview.self_paced
+            ):
+                modified_date = course_overview.certificate_available_date
+            elif (
+                course_overview.certificates_display_behavior == CertificatesDisplayBehaviors.END
+                and course_overview.end
+                and not course_overview.self_paced
+            ):
+                modified_date = course_overview.end
             else:
-                if (
-                    course_overview.certificates_display_behavior == CertificatesDisplayBehaviors.END_WITH_DATE
-                    and course_overview.certificate_available_date
-                    and not course_overview.self_paced
-                ):
-                    modified_date = course_overview.certificate_available_date
-                elif course_overview.certificates_display_behavior == CertificatesDisplayBehaviors.END:
-                    modified_date = course_overview.end
-                else:
-                    modified_date = datetime.now().date()
-            user_certificate = GeneratedCertificate(
-                mode=preview_mode,
-                verify_uuid=str(uuid4().hex),
-                modified_date=modified_date,
-                created_date=datetime.now().date(),
-            )
+                modified_date = datetime.now().date()
+        user_certificate = GeneratedCertificate(
+            mode=preview_mode,
+            verify_uuid=str(uuid4().hex),
+            modified_date=modified_date,
+            created_date=datetime.now().date(),
+        )
     elif certificates_viewable_for_course(course_overview):
         # certificate is being viewed by learner or public
         try:
@@ -558,6 +559,9 @@ def render_html_view(request, course_id, certificate=None):  # pylint: disable=t
         _update_context_with_basic_info(context, course_id, platform_name, configuration)
 
         context['certificate_data'] = active_configuration
+
+        # Append user certificate to context
+        context["user_certificate"] = user_certificate
 
         # Append/Override the existing view context values with any mode-specific ConfigurationModel values
         context.update(configuration.get(user_certificate.mode, {}))

@@ -10,10 +10,25 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.dispatch import receiver
-from edx_toggles.toggles import SettingToggle
 from opaque_keys.edx.keys import CourseKey
-from openedx_events.content_authoring.data import CourseCatalogData, CourseScheduleData
-from openedx_events.content_authoring.signals import COURSE_CATALOG_INFO_CHANGED
+from openedx_events.content_authoring.data import (
+    CourseCatalogData,
+    CourseData,
+    CourseScheduleData,
+    LibraryBlockData,
+    LibraryContainerData,
+    XBlockData,
+)
+from openedx_events.content_authoring.signals import (
+    COURSE_CATALOG_INFO_CHANGED,
+    COURSE_IMPORT_COMPLETED,
+    COURSE_RERUN_COMPLETED,
+    LIBRARY_BLOCK_DELETED,
+    LIBRARY_CONTAINER_DELETED,
+    XBLOCK_CREATED,
+    XBLOCK_DELETED,
+    XBLOCK_UPDATED,
+)
 from pytz import UTC
 
 from cms.djangoapps.contentstore.courseware_index import (
@@ -29,6 +44,16 @@ from openedx.core.djangoapps.discussions.tasks import update_discussions_setting
 from openedx.core.lib.gating import api as gating_api
 from xmodule.modulestore import ModuleStoreEnum
 from xmodule.modulestore.django import SignalHandler, modulestore
+from xmodule.modulestore.exceptions import ItemNotFoundError
+
+from ..models import ComponentLink, ContainerLink
+from ..tasks import (
+    create_or_update_upstream_links,
+    handle_create_xblock_upstream_link,
+    handle_update_xblock_upstream_link,
+    handle_unlink_upstream_block,
+    handle_unlink_upstream_container,
+)
 from .signals import GRADING_POLICY_CHANGED
 
 log = logging.getLogger(__name__)
@@ -48,21 +73,6 @@ def locked(expiry_seconds, key):  # lint-amnesty, pylint: disable=missing-functi
                 log.info('Task with key %s already exists in cache', cache_key)
         return wrapper
     return task_decorator
-
-
-# .. toggle_name: SEND_CATALOG_INFO_SIGNAL
-# .. toggle_implementation: SettingToggle
-# .. toggle_default: False
-# .. toggle_description: When True, sends to catalog-info-changed signal when course_published occurs.
-#   This is a temporary toggle to allow us to test the event bus integration; it should be removed and
-#   always-on once the integration is well-tested and the error cases are handled. (This is separate
-#   from whether the event bus itself is configured; if this toggle is on but the event bus is not
-#   configured, we should expect a warning at most.)
-# .. toggle_use_cases: temporary
-# .. toggle_creation_date: 2022-08-22
-# .. toggle_target_removal_date: 2022-10-30
-# .. toggle_tickets: https://github.com/openedx/edx-platform/issues/30682
-SEND_CATALOG_INFO_SIGNAL = SettingToggle('SEND_CATALOG_INFO_SIGNAL', default=False, module_name=__name__)
 
 
 def _create_catalog_data_for_signal(course_key: CourseKey) -> (Optional[datetime], Optional[CourseCatalogData]):
@@ -104,10 +114,11 @@ def emit_catalog_info_changed_signal(course_key: CourseKey):
     """
     Given the key of a recently published course, send course data to catalog-info-changed signal.
     """
-    if SEND_CATALOG_INFO_SIGNAL.is_enabled():
-        timestamp, catalog_info = _create_catalog_data_for_signal(course_key)
-        if catalog_info is not None:
-            COURSE_CATALOG_INFO_CHANGED.send_event(time=timestamp, catalog_info=catalog_info)
+    timestamp, catalog_info = _create_catalog_data_for_signal(course_key)
+    if catalog_info is not None:
+        # .. event_implemented_name: COURSE_CATALOG_INFO_CHANGED
+        # .. event_type: org.openedx.content_authoring.course.catalog_info.changed.v1
+        COURSE_CATALOG_INFO_CHANGED.send_event(time=timestamp, catalog_info=catalog_info)
 
 
 @receiver(SignalHandler.course_published)
@@ -197,12 +208,20 @@ def handle_item_deleted(**kwargs):
         # Strip branch info
         usage_key = usage_key.for_branch(None)
         course_key = usage_key.course_key
-        deleted_block = modulestore().get_item(usage_key)
+        try:
+            deleted_block = modulestore().get_item(usage_key)
+        except ItemNotFoundError:
+            return
+        id_list = {deleted_block.location}
         for block in yield_dynamic_block_descendants(deleted_block, kwargs.get('user_id')):
             # Remove prerequisite milestone data
             gating_api.remove_prerequisite(block.location)
             # Remove any 'requires' course content milestone relationships
             gating_api.set_required_content(course_key, block.location, None, None, None)
+            id_list.add(block.location)
+
+        ComponentLink.objects.filter(downstream_usage_key__in=id_list).delete()
+        ContainerLink.objects.filter(downstream_usage_key__in=id_list).delete()
 
 
 @receiver(GRADING_POLICY_CHANGED)
@@ -224,3 +243,90 @@ def handle_grading_policy_changed(sender, **kwargs):
         task_id=result.task_id,
         kwargs=kwargs,
     ))
+
+
+@receiver(XBLOCK_CREATED)
+def create_upstream_downstream_link_handler(**kwargs):
+    """
+    Automatically create upstream->downstream link in database.
+    """
+    xblock_info = kwargs.get("xblock_info", None)
+    if not xblock_info or not isinstance(xblock_info, XBlockData):
+        log.error("Received null or incorrect data for event")
+        return
+
+    handle_create_xblock_upstream_link.delay(str(xblock_info.usage_key))
+
+
+@receiver(XBLOCK_UPDATED)
+def update_upstream_downstream_link_handler(**kwargs):
+    """
+    Automatically update upstream->downstream link in database.
+    """
+    xblock_info = kwargs.get("xblock_info", None)
+    if not xblock_info or not isinstance(xblock_info, XBlockData):
+        log.error("Received null or incorrect data for event")
+        return
+
+    handle_update_xblock_upstream_link.delay(str(xblock_info.usage_key))
+
+
+@receiver(XBLOCK_DELETED)
+def delete_upstream_downstream_link_handler(**kwargs):
+    """
+    Delete upstream->downstream link from database on xblock delete.
+    """
+    xblock_info = kwargs.get("xblock_info", None)
+    if not xblock_info or not isinstance(xblock_info, XBlockData):
+        log.error("Received null or incorrect data for event")
+        return
+
+    ComponentLink.objects.filter(
+        downstream_usage_key=xblock_info.usage_key
+    ).delete()
+    ContainerLink.objects.filter(
+        downstream_usage_key=xblock_info.usage_key
+    ).delete()
+
+
+@receiver([COURSE_IMPORT_COMPLETED, COURSE_RERUN_COMPLETED])
+def handle_upstream_links_on_signal(**kwargs):
+    """
+    Automatically create upstream->downstream links for course in database on new import or rerun.
+    """
+    course_data = kwargs.get("course", None)
+    if not course_data or not isinstance(course_data, CourseData):
+        log.error("Received null or incorrect data for event")
+        return
+
+    create_or_update_upstream_links.delay(
+        str(course_data.course_key),
+        force=True,
+        replace=True
+    )
+
+
+@receiver(LIBRARY_BLOCK_DELETED)
+def unlink_upstream_block_handler(**kwargs):
+    """
+    Handle unlinking the upstream (library) block from any downstream (course) blocks.
+    """
+    library_block = kwargs.get("library_block", None)
+    if not library_block or not isinstance(library_block, LibraryBlockData):
+        log.error("Received null or incorrect data for event")
+        return
+
+    handle_unlink_upstream_block.delay(str(library_block.usage_key))
+
+
+@receiver(LIBRARY_CONTAINER_DELETED)
+def unlink_upstream_container_handler(**kwargs):
+    """
+    Handle unlinking the upstream (library) container from any downstream (course) blocks.
+    """
+    library_container = kwargs.get("library_container", None)
+    if not library_container or not isinstance(library_container, LibraryContainerData):  # pragma: no cover
+        log.error("Received null or incorrect data for event")
+        return
+
+    handle_unlink_upstream_container.delay(str(library_container.container_key))

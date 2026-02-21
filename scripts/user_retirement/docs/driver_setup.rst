@@ -1,6 +1,5 @@
 .. _driver-setup:
 
-#############################################
 Setting Up the User Retirement Driver Scripts
 #############################################
 
@@ -65,19 +64,16 @@ For example: ``['RETIRING_CREDENTIALS', 'CREDENTIALS_COMPLETE', 'CREDENTIALS',
 a pre-instantiated ``retire_learner`` method in the ``CredentialsApi``, then set
 the user's state to ``CREDENTIALS_COMPLETE``.
 
-********
 Examples
 ********
 
 The following are some examples of how to use the driver scripts.
 
-==================
 Set Up Environment
 ==================
 
 Follow this `readme <https://github.com/openedx/edx-platform/tree/master/scripts/user_retirement#readme>`_ to set up your execution environment.
 
-=========================
 List of Targeted Learners
 =========================
 
@@ -93,7 +89,6 @@ state for the time specified ``cool_off_days``).
        --output_dir=learners_to_retire \
        --cool_off_days=5
 
-=====================
 Run Retirement Script
 =====================
 
@@ -109,26 +104,4 @@ several INI files, each containing a single line in the form of ``USERNAME
        --username=<username-of-learner-to-retire>
 
 
-**************************************************
-Using the Driver Scripts in an Automated Framework
-**************************************************
-
-At edX, we call the user retirement scripts from
-`Jenkins <https://jenkins.io/>`_ jobs on one of our internal Jenkins
-services. The user retirement driver scripts are intended to be agnostic
-about which automation framework you use, but they were only fully tested
-from Jenkins.
-
-For more information about how we execute these scripts at edX, see the
-following wiki articles:
-
-* `User Retirement Jenkins Implementation <https://openedx.atlassian.net/wiki/spaces/PLAT/pages/704872737/User+Retirement+Jenkins+Implementation>`_
-* `How to: retirement Jenkins jobs development and testing <https://openedx.atlassian.net/wiki/spaces/PLAT/pages/698221444/How+to+retirement+Jenkins+jobs+development+and+testing>`_
-
-And check out the Groovy DSL files we use to seed these jobs:
-
-* `platform/jobs/RetirementJobs.groovy in edx/jenkins-job-dsl <https://github.com/edx/jenkins-job-dsl/blob/master/platform/jobs/RetirementJobs.groovy>`_
-* `platform/jobs/RetirementJobEdxTriggers.groovy in edx/jenkins-job-dsl <https://github.com/edx/jenkins-job-dsl/blob/master/platform/jobs/RetirementJobEdxTriggers.groovy>`_
-
 .. include:: ../../../../links/links.rst
-

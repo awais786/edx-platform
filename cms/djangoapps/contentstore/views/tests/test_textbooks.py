@@ -4,6 +4,7 @@
 import json
 from unittest import TestCase
 
+
 from cms.djangoapps.contentstore.tests.utils import CourseTestCase
 from cms.djangoapps.contentstore.utils import reverse_course_url
 
@@ -20,11 +21,7 @@ class TextbookIndexTestCase(CourseTestCase):
     def test_view_index(self):
         "Basic check that the textbook index page responds correctly"
         resp = self.client.get(self.url)
-        self.assertEqual(resp.status_code, 200)
-        # we don't have resp.context right now,
-        # due to bugs in our testing harness :(
-        if resp.context and resp.context.get('course'):
-            self.assertEqual(resp.context['course'], self.course)
+        self.assertEqual(resp.status_code, 302)
 
     def test_view_index_xhr(self):
         "Check that we get a JSON response when requested via AJAX"

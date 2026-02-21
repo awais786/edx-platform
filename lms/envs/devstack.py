@@ -6,6 +6,7 @@ Specific overrides to the base prod settings to make development easier.
 # Silence noisy logs
 import logging
 from os.path import abspath, dirname, join
+from urllib.parse import urlparse
 
 # pylint: enable=unicode-format-string  # lint-amnesty, pylint: disable=bad-option-value
 #####################################################################
@@ -13,14 +14,19 @@ from edx_django_utils.plugins import add_plugins
 
 from openedx.core.djangoapps.plugins.constants import ProjectType, SettingsType
 
+from openedx.core.lib.features_setting_proxy import FeaturesProxy
+
 from .production import *  # pylint: disable=wildcard-import, unused-wildcard-import
 
+FEATURES = FeaturesProxy(globals())
 # Don't use S3 in devstack, fall back to filesystem
-del DEFAULT_FILE_STORAGE
+STORAGES['default']['BACKEND'] = 'django.core.files.storage.FileSystemStorage'
 ORA2_FILEUPLOAD_BACKEND = 'django'
 
 
 DEBUG = True
+INTERNAL_IPS = ('127.0.0.1',)
+
 USE_I18N = True
 DEFAULT_TEMPLATE_ENGINE['OPTIONS']['debug'] = True
 LMS_BASE = 'localhost:18000'
@@ -80,13 +86,14 @@ DJFS = {
 
 ################################ DEBUG TOOLBAR ################################
 
-INSTALLED_APPS += ['debug_toolbar']
-MIDDLEWARE += [
-    'lms.djangoapps.discussion.django_comment_client.utils.QueryCountDebugMiddleware',
-    'debug_toolbar.middleware.DebugToolbarMiddleware',
-]
-
-INTERNAL_IPS = ('127.0.0.1',)
+# The Django Debug Toolbar is disabled by default, if you need to enable it for
+# debugging.  Simply uncomment the INSTALLED_APPS and MIDDLEWARE section below.
+#
+# INSTALLED_APPS += ['debug_toolbar']
+# MIDDLEWARE += [
+#     'lms.djangoapps.discussion.django_comment_client.utils.QueryCountDebugMiddleware',
+#     'debug_toolbar.middleware.DebugToolbarMiddleware',
+# ]
 
 DEBUG_TOOLBAR_PANELS = (
     'debug_toolbar.panels.versions.VersionsPanel',
@@ -96,11 +103,12 @@ DEBUG_TOOLBAR_PANELS = (
     'debug_toolbar.panels.request.RequestPanel',
     'debug_toolbar.panels.sql.SQLPanel',
     'debug_toolbar.panels.signals.SignalsPanel',
+    'debug_toolbar.panels.cache.CachePanel',
     'debug_toolbar.panels.history.HistoryPanel',
+
     # ProfilingPanel has been intentionally removed for default devstack.py
-    # runtimes for performance reasons. If you wish to re-enable it in your
-    # local development environment, please create a new settings file
-    # that imports and extends devstack.py.
+    # runtimes for performance reasons.
+    # 'debug_toolbar.panels.profiling.ProfilingPanel',
 )
 
 DEBUG_TOOLBAR_CONFIG = {
@@ -118,7 +126,7 @@ def should_show_debug_toolbar(request):  # lint-amnesty, pylint: disable=missing
 ########################### PIPELINE #################################
 
 PIPELINE['PIPELINE_ENABLED'] = False
-STATICFILES_STORAGE = 'openedx.core.storage.DevelopmentStorage'
+STORAGES['staticfiles']['BACKEND'] = 'openedx.core.storage.DevelopmentStorage'
 
 # Revert to the default set of finders as we don't want the production pipeline
 STATICFILES_FINDERS = [
@@ -135,36 +143,32 @@ REQUIRE_DEBUG = DEBUG
 
 PIPELINE['SASS_ARGUMENTS'] = '--debug-info'
 
-# Load development webpack configuration
-WEBPACK_CONFIG_PATH = 'webpack.dev.config.js'
-
 ########################### VERIFIED CERTIFICATES #################################
 
-FEATURES['AUTOMATIC_VERIFY_STUDENT_IDENTITY_FOR_TESTING'] = True
+AUTOMATIC_VERIFY_STUDENT_IDENTITY_FOR_TESTING = True
 
 ########################### External REST APIs #################################
-FEATURES['ENABLE_OAUTH2_PROVIDER'] = True
-FEATURES['ENABLE_MOBILE_REST_API'] = True
-FEATURES['ENABLE_VIDEO_ABSTRACTION_LAYER_API'] = True
+ENABLE_MOBILE_REST_API = True
+ENABLE_VIDEO_ABSTRACTION_LAYER_API = True
 
 ########################## SECURITY #######################
-FEATURES['ENABLE_MAX_FAILED_LOGIN_ATTEMPTS'] = False
-FEATURES['SQUELCH_PII_IN_LOGS'] = False
-FEATURES['PREVENT_CONCURRENT_LOGINS'] = False
+ENABLE_MAX_FAILED_LOGIN_ATTEMPTS = False
+SQUELCH_PII_IN_LOGS = False
+PREVENT_CONCURRENT_LOGINS = False
 
 ########################### Milestones #################################
-FEATURES['MILESTONES_APP'] = True
+MILESTONES_APP = True
 
 ########################### Entrance Exams #################################
-FEATURES['ENTRANCE_EXAMS'] = True
+ENTRANCE_EXAMS = True
 
 ################################ COURSE LICENSES ################################
-FEATURES['LICENSING'] = True
+LICENSING = True
 
 
 ########################## Courseware Search #######################
-FEATURES['ENABLE_COURSEWARE_SEARCH'] = True
-FEATURES['ENABLE_COURSEWARE_SEARCH_FOR_COURSE_STAFF'] = True
+ENABLE_COURSEWARE_SEARCH = True
+ENABLE_COURSEWARE_SEARCH_FOR_COURSE_STAFF = True
 SEARCH_ENGINE = 'search.elastic.ElasticSearchEngine'
 SEARCH_COURSEWARE_CONTENT_LOG_PARAMS = True
 
@@ -177,11 +181,11 @@ ELASTIC_SEARCH_CONFIG = [
 ]
 
 ########################## Dashboard Search #######################
-FEATURES['ENABLE_DASHBOARD_SEARCH'] = False
+ENABLE_DASHBOARD_SEARCH = False
 
 
 ########################## Certificates Web/HTML View #######################
-FEATURES['CERTIFICATES_HTML_VIEW'] = True
+CERTIFICATES_HTML_VIEW = True
 
 
 ########################## Course Discovery #######################
@@ -203,14 +207,14 @@ COURSE_DISCOVERY_MEANINGS = {
     'language': LANGUAGE_MAP,
 }
 
-FEATURES['ENABLE_COURSE_DISCOVERY'] = False
+ENABLE_COURSE_DISCOVERY = False
 # Setting for overriding default filtering facets for Course discovery
 # COURSE_DISCOVERY_FILTERS = ["org", "language", "modes"]
-FEATURES['COURSES_ARE_BROWSEABLE'] = True
+COURSES_ARE_BROWSEABLE = True
 HOMEPAGE_COURSE_MAX = 9
 
 # Software secure fake page feature flag
-FEATURES['ENABLE_SOFTWARE_SECURE_FAKE'] = True
+ENABLE_SOFTWARE_SECURE_FAKE = True
 
 # Setting for the testing of Software Secure Result Callback
 VERIFY_STUDENT["SOFTWARE_SECURE"] = {
@@ -224,14 +228,14 @@ SEARCH_SKIP_ENROLLMENT_START_DATE_FILTERING = True
 
 
 ########################## Shopping cart ##########################
-FEATURES['ENABLE_COSMETIC_DISPLAY_PRICE'] = True
+ENABLE_COSMETIC_DISPLAY_PRICE = True
 
 ######################### Program Enrollments #####################
-FEATURES['ENABLE_ENROLLMENT_RESET'] = True
+ENABLE_ENROLLMENT_RESET = True
 
 ########################## Third Party Auth #######################
 
-if FEATURES.get('ENABLE_THIRD_PARTY_AUTH') and (
+if ENABLE_THIRD_PARTY_AUTH and (
         'common.djangoapps.third_party_auth.dummy.DummyBackend' not in AUTHENTICATION_BACKENDS
 ):
     AUTHENTICATION_BACKENDS = ['common.djangoapps.third_party_auth.dummy.DummyBackend'] + list(AUTHENTICATION_BACKENDS)
@@ -285,8 +289,13 @@ ORA_MICROFRONTEND_URL = 'http://localhost:1992'
 ########################## LEARNER HOME APP ##############################
 LEARNER_HOME_MICROFRONTEND_URL = 'http://localhost:1996'
 
+########################## LEARNING MFE ##############################
+# pylint: disable=line-too-long
+LEARNING_MICROFRONTEND_URL = os.environ.get("LEARNING_MICROFRONTEND_URL", "http://localhost:2000")
+LEARNING_MICROFRONTEND_NETLOC = os.environ.get("LEARNING_MICROFRONTEND_NETLOC", urlparse(LEARNING_MICROFRONTEND_URL).netloc)
+
 ###################### Cross-domain requests ######################
-FEATURES['ENABLE_CORS_HEADERS'] = True
+ENABLE_CORS_HEADERS = True
 CORS_ALLOW_CREDENTIALS = True
 CORS_ORIGIN_WHITELIST = ()
 CORS_ORIGIN_ALLOW_ALL = True
@@ -304,7 +313,7 @@ LOGIN_REDIRECT_WHITELIST.extend([
     'localhost:1997',  # frontend-app-account
     'localhost:1976',  # frontend-app-program-console
     'localhost:1994',  # frontend-app-gradebook
-    'localhost:2000',  # frontend-app-learning
+    LEARNING_MICROFRONTEND_NETLOC,  # frontend-app-learning
     'localhost:2001',  # frontend-app-course-authoring
     'localhost:3001',  # frontend-app-library-authoring
     'localhost:18400',  # frontend-app-publisher
@@ -384,10 +393,12 @@ EDXNOTES_CLIENT_NAME = 'edx_notes_api-backend-service'
 ############## Settings for Microfrontends  #########################
 LEARNING_MICROFRONTEND_URL = 'http://localhost:2000'
 ACCOUNT_MICROFRONTEND_URL = 'http://localhost:1997'
+PROFILE_MICROFRONTEND_URL = 'http://localhost:1995'
 COMMUNICATIONS_MICROFRONTEND_URL = 'http://localhost:1984'
 AUTHN_MICROFRONTEND_URL = 'http://localhost:1999'
 AUTHN_MICROFRONTEND_DOMAIN = 'localhost:1999'
 EXAMS_DASHBOARD_MICROFRONTEND_URL = 'http://localhost:2020'
+CATALOG_MICROFRONTEND_URL = 'http://localhost:1998/catalog'
 
 ################### FRONTEND APPLICATION DISCUSSIONS ###################
 DISCUSSIONS_MICROFRONTEND_URL = 'http://localhost:2002'
@@ -395,19 +406,19 @@ DISCUSSIONS_MICROFRONTEND_URL = 'http://localhost:2002'
 ################### FRONTEND APPLICATION DISCUSSIONS FEEDBACK URL###################
 DISCUSSIONS_MFE_FEEDBACK_URL = None
 
+DISCUSSION_SPAM_URLS = []
+
 ############## Docker based devstack settings #######################
 
-FEATURES.update({
-    'AUTOMATIC_AUTH_FOR_TESTING': True,
-    'ENABLE_DISCUSSION_SERVICE': True,
-    'SHOW_HEADER_LANGUAGE_SELECTOR': True,
+AUTOMATIC_AUTH_FOR_TESTING = True
+ENABLE_DISCUSSION_SERVICE = True
+SHOW_HEADER_LANGUAGE_SELECTOR = True
 
-    # Enable enterprise integration by default.
-    # See https://github.com/openedx/edx-enterprise/blob/master/docs/development.rst for
-    # more background on edx-enterprise.
-    # Toggle this off if you don't want anything to do with enterprise in devstack.
-    'ENABLE_ENTERPRISE_INTEGRATION': True,
-})
+# Enable enterprise integration by default.
+# See https://github.com/openedx/edx-enterprise/blob/master/docs/development.rst for
+# more background on edx-enterprise.
+# Toggle this off if you don't want anything to do with enterprise in devstack.
+ENABLE_ENTERPRISE_INTEGRATION = True
 
 ENABLE_MKTG_SITE = os.environ.get('ENABLE_MARKETING_SITE', False)
 MARKETING_SITE_ROOT = os.environ.get('MARKETING_SITE_ROOT', 'http://localhost:8080')
@@ -453,7 +464,7 @@ SYSTEM_WIDE_ROLE_CLASSES.append(
     'system_wide_roles.SystemWideRoleAssignment',
 )
 
-if FEATURES.get('ENABLE_ENTERPRISE_INTEGRATION'):
+if ENABLE_ENTERPRISE_INTEGRATION:
     SYSTEM_WIDE_ROLE_CLASSES.append(
         'enterprise.SystemWideEnterpriseUserRoleAssignment',
     )
@@ -468,19 +479,19 @@ DCS_SESSION_COOKIE_SAMESITE_FORCE_ALL = True
 # If you want to enable theming in devstack, uncomment this section and add any relevant
 # theme directories to COMPREHENSIVE_THEME_DIRS
 
-# We have to import the private method here because production.py calls
-# derive_settings('lms.envs.production') which runs _make_mako_template_dirs with
+# We have to import the make_mako_template_dirs method here because production.py calls
+# derive_settings('lms.envs.production') which runs make_mako_template_dirs with
 # the settings from production, which doesn't include these theming settings. Thus,
 # the templating engine is unable to find the themed templates because they don't exist
 # in it's path. Re-calling derive_settings doesn't work because the settings was already
 # changed from a function to a list, and it can't be derived again.
 
-# from .common import _make_mako_template_dirs
+# from openedx.envs.common import make_mako_template_dirs
 # ENABLE_COMPREHENSIVE_THEMING = True
 # COMPREHENSIVE_THEME_DIRS = [
 #     "/edx/app/edxapp/edx-platform/themes/"
 # ]
-# TEMPLATES[1]["DIRS"] = _make_mako_template_dirs
+# TEMPLATES[1]["DIRS"] = make_mako_template_dirs
 # derive_settings(__name__)
 
 # Uncomment the lines below if you'd like to see SQL statements in your devstack LMS log.
@@ -488,8 +499,8 @@ DCS_SESSION_COOKIE_SAMESITE_FORCE_ALL = True
 # LOGGING['loggers']['django.db.backends'] = {'handlers': ['console'], 'level': 'DEBUG', 'propagate': False}
 
 ################### Special Exams (Proctoring) and Prereqs ###################
-FEATURES['ENABLE_SPECIAL_EXAMS'] = True
-FEATURES['ENABLE_PREREQUISITE_COURSES'] = True
+ENABLE_SPECIAL_EXAMS = True
+ENABLE_PREREQUISITE_COURSES = True
 
 # Used in edx-proctoring for ID generation in lieu of SECRET_KEY - dummy value
 # (ref MST-637)
@@ -522,15 +533,9 @@ course_access_role_removed_event_setting = EVENT_BUS_PRODUCER_CONFIG[
 ]
 course_access_role_removed_event_setting['learning-course-access-role-lifecycle']['enabled'] = True
 
-######################## Subscriptions API SETTINGS ########################
-SUBSCRIPTIONS_ROOT_URL = "http://host.docker.internal:18750"
-SUBSCRIPTIONS_API_PATH = f"{SUBSCRIPTIONS_ROOT_URL}/api/v1/stripe-subscription/"
-
-SUBSCRIPTIONS_LEARNER_HELP_CENTER_URL = None
-SUBSCRIPTIONS_BUY_SUBSCRIPTION_URL = f"{SUBSCRIPTIONS_ROOT_URL}/api/v1/stripe-subscribe/"
-SUBSCRIPTIONS_MANAGE_SUBSCRIPTION_URL = None
-SUBSCRIPTIONS_MINIMUM_PRICE = '$39'
-SUBSCRIPTIONS_TRIAL_LENGTH = 7
+lc_enrollment_revoked_setting = \
+    EVENT_BUS_PRODUCER_CONFIG['org.openedx.enterprise.learner_credit_course_enrollment.revoked.v1']
+lc_enrollment_revoked_setting['learner-credit-course-enrollment-lifecycle']['enabled'] = True
 
 # API access management
 API_ACCESS_MANAGER_EMAIL = 'api-access@example.com'
@@ -545,18 +550,34 @@ AI_TRANSLATIONS_API_URL = 'http://localhost:18760/api/v1'
 
 # MFEs that will call this service in devstack
 CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:2000',  # frontend-app-learning
+    LEARNING_MICROFRONTEND_URL,  # frontend-app-learning
     'http://localhost:2001',  # frontend-app-course-authoring
     'http://localhost:1997',  # frontend-app-account
     'http://localhost:1995',  # frontend-app-profile
     'http://localhost:1992',  # frontend-app-ora
     'http://localhost:2002',  # frontend-app-discussions
     'http://localhost:1991',  # frontend-app-admin-portal
+    'http://localhost:8734',  # frontend-app-learner-portal-enterprise
     'http://localhost:1999',  # frontend-app-authn
     'http://localhost:18450',  # frontend-app-support-tools
     'http://localhost:1994',  # frontend-app-gradebook
+    'http://localhost:1996',  # frontend-app-learner-dashboard
 ]
 
+RETIREMENT_STATES = [
+    'PENDING',
+    'LOCKING_ACCOUNT',
+    'LOCKING_COMPLETE',
+    'RETIRING_ENROLLMENTS',
+    'ENROLLMENTS_COMPLETE',
+    'RETIRING_LMS_MISC',
+    'LMS_MISC_COMPLETE',
+    'RETIRING_LMS',
+    'LMS_COMPLETE',
+    'ERRORED',
+    'ABORTED',
+    'COMPLETE',
+]
 
 ################# New settings must go ABOVE this line #################
 ########################################################################

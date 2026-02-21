@@ -4,12 +4,12 @@ from eventtracking import tracker
 
 from common.djangoapps.track import contexts, segment
 
-NOTIFICATION_PREFERENCES_VIEWED = 'edx.notifications.preferences.viewed'
 NOTIFICATION_GENERATED = 'edx.notifications.generated'
 NOTIFICATION_READ = 'edx.notifications.read'
 NOTIFICATION_APP_ALL_READ = 'edx.notifications.app_all_read'
 NOTIFICATION_PREFERENCES_UPDATED = 'edx.notifications.preferences.updated'
 NOTIFICATION_TRAY_OPENED = 'edx.notifications.tray_opened'
+NOTIFICATION_PREFERENCE_UNSUBSCRIBE = 'edx.notifications.preferences.one_click_unsubscribe'
 
 
 def get_user_forums_roles(user, course_id):
@@ -43,23 +43,6 @@ def notification_event_context(user, course_id, notification):
         'user_forum_roles': get_user_forums_roles(user, course_id),
         'user_course_roles': get_user_course_roles(user, course_id),
     }
-
-
-def notification_preferences_viewed_event(request, course_id):
-    """
-    Emit an event when a user views their notification preferences.
-    """
-    context = contexts.course_context_from_course_id(course_id)
-    with tracker.get_tracker().context(NOTIFICATION_PREFERENCES_VIEWED, context):
-        tracker.emit(
-            NOTIFICATION_PREFERENCES_VIEWED,
-            {
-                'user_id': str(request.user.id),
-                'course_id': str(course_id),
-                'user_forum_roles': get_user_forums_roles(request.user, course_id),
-                'user_course_roles': get_user_course_roles(request.user, course_id),
-            }
-        )
 
 
 def notification_generated_event(user_ids, app_name, notification_type, course_key,
@@ -124,23 +107,36 @@ def notification_preference_update_event(user, course_id, updated_preference):
     """
     Emit an event when a notification preference is updated.
     """
-    context = contexts.course_context_from_course_id(course_id)
-    with tracker.get_tracker().context(NOTIFICATION_PREFERENCES_UPDATED, context):
-        value = updated_preference.get('value', '')
-        if updated_preference.get('notification_channel', '') == 'email_cadence':
-            value = updated_preference.get('email_cadence', '')
+    value = updated_preference.get('value', '')
+    if updated_preference.get('notification_channel', '') == 'email_cadence':
+        value = updated_preference.get('email_cadence', '')
+    event_data = {
+        'user_id': str(user.id),
+        'notification_app': updated_preference.get('notification_app', ''),
+        'notification_type': updated_preference.get('notification_type', ''),
+        'notification_channel': updated_preference.get('notification_channel', ''),
+        'value': value,
+        'course_id': None,
+        'user_forum_roles': [],
+        'user_course_roles': [],
+        'type': 'course',
+    }
+    if not isinstance(course_id, list):
+        context = contexts.course_context_from_course_id(course_id)
+        with tracker.get_tracker().context(NOTIFICATION_PREFERENCES_UPDATED, context):
+            event_data['course_id'] = str(course_id)
+            event_data['user_forum_roles'] = get_user_forums_roles(user, course_id)
+            event_data['user_course_roles'] = get_user_course_roles(user, course_id)
+            tracker.emit(
+                NOTIFICATION_PREFERENCES_UPDATED,
+                event_data
+            )
+    else:
+        event_data['course_ids'] = course_id
+        event_data['type'] = 'account'
         tracker.emit(
             NOTIFICATION_PREFERENCES_UPDATED,
-            {
-                'user_id': str(user.id),
-                'course_id': str(course_id),
-                'user_forum_roles': get_user_forums_roles(user, course_id),
-                'user_course_roles': get_user_course_roles(user, course_id),
-                'notification_app': updated_preference.get('notification_app', ''),
-                'notification_type': updated_preference.get('notification_type', ''),
-                'notification_channel': updated_preference.get('notification_channel', ''),
-                'value': value
-            }
+            event_data
         )
 
 
@@ -155,3 +151,20 @@ def notification_tray_opened_event(user, unseen_notifications_count):
             'unseen_notifications_count': unseen_notifications_count,
         }
     )
+
+
+def notification_preference_unsubscribe_event(user, is_preference_updated=False):
+    """
+    Emits an event when user clicks on one-click-unsubscribe url
+    """
+    context_data = {
+        'user_id': user.id,
+        'username': user.username
+    }
+    event_data = context_data.copy()
+    event_data['event_type'] = 'email_digest_unsubscribe'
+    event_data['is_preference_updated'] = is_preference_updated
+
+    with tracker.get_tracker().context(NOTIFICATION_PREFERENCE_UNSUBSCRIBE, context_data):
+        tracker.emit(NOTIFICATION_PREFERENCE_UNSUBSCRIBE, event_data)
+    segment.track(user.id, NOTIFICATION_PREFERENCE_UNSUBSCRIBE, event_data)

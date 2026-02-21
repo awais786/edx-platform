@@ -27,6 +27,7 @@ import mimetypes
 import os
 import re
 from abc import abstractmethod
+from datetime import datetime, timezone
 
 import xblock
 from django.core.exceptions import ObjectDoesNotExist
@@ -34,12 +35,15 @@ from django.utils.translation import gettext as _
 from lxml import etree
 from opaque_keys.edx.keys import UsageKey
 from opaque_keys.edx.locator import LibraryLocator
+from openedx_events.content_authoring.data import CourseData
+from openedx_events.content_authoring.signals import COURSE_IMPORT_COMPLETED
 from path import Path as path
 from xblock.core import XBlockMixin
 from xblock.fields import Reference, ReferenceList, ReferenceValueDict, Scope
 from xblock.runtime import DictKeyValueStore, KvsFieldData
 
 from common.djangoapps.util.monitoring import monitor_import_failure
+from openedx.core.djangoapps.content_tagging.api import import_course_tags_from_csv
 from xmodule.assetstore import AssetMetadata
 from xmodule.contentstore.content import StaticContent
 from xmodule.errortracker import make_error_tracker
@@ -48,11 +52,10 @@ from xmodule.modulestore.django import ASSET_IGNORE_REGEX
 from xmodule.modulestore.exceptions import DuplicateCourseError
 from xmodule.modulestore.mongo.base import MongoRevisionKey
 from xmodule.modulestore.store_utilities import draft_node_constructor, get_draft_subtree_roots
-from xmodule.modulestore.xml import ImportSystem, LibraryXMLModuleStore, XMLModuleStore
+from xmodule.modulestore.xml import XMLImportingModuleStoreRuntime, LibraryXMLModuleStore, XMLModuleStore
 from xmodule.tabs import CourseTabList
 from xmodule.util.misc import escape_invalid_characters
 from xmodule.x_module import XModuleMixin
-from openedx.core.djangoapps.content_tagging.api import import_course_tags_from_csv
 
 from .inheritance import own_metadata
 from .store_utilities import rewrite_nonportable_content_links
@@ -548,6 +551,11 @@ class ImportManager:
                 # pylint: disable=raise-missing-from
                 raise BlockFailedToImport(leftover.display_name, leftover.location)
 
+    def post_course_import(self, dest_id):
+        """
+        Tasks that need to triggered after a course is imported.
+        """
+
     def run_imports(self):
         """
         Iterate over the given directories and yield courses.
@@ -589,6 +597,7 @@ class ImportManager:
                     logging.info(f'Course import {dest_id}: No tags.csv file present.')
                 except ValueError as e:
                     logging.info(f'Course import {dest_id}: {str(e)}')
+            self.post_course_import(dest_id)
             yield courselike
 
 
@@ -716,6 +725,19 @@ class CourseImportManager(ImportManager):
         """
         csv_path = path(data_path) / 'tags.csv'
         import_course_tags_from_csv(csv_path, dest_id)
+
+    def post_course_import(self, dest_id):
+        """
+        Trigger celery task to create upstream links for newly imported blocks.
+        """
+        # .. event_implemented_name: COURSE_IMPORT_COMPLETED
+        # .. event_type: org.openedx.content_authoring.course.import.completed.v1
+        COURSE_IMPORT_COMPLETED.send_event(
+            time=datetime.now(timezone.utc),
+            course=CourseData(
+                course_key=dest_id
+            )
+        )
 
 
 class LibraryImportManager(ImportManager):
@@ -971,8 +993,8 @@ def _import_course_draft(
     # create a new 'System' object which will manage the importing
     errorlog = make_error_tracker()
 
-    # The course_dir as passed to ImportSystem is expected to just be relative, not
-    # the complete path including data_dir. ImportSystem will concatenate the two together.
+    # The course_dir as passed to XMLImportingModuleStoreRuntime is expected to just be relative, not
+    # the complete path including data_dir. XMLImportingModuleStoreRuntime will concatenate the two together.
     data_dir = xml_module_store.data_dir
     # Whether or not data_dir ends with a "/" differs in production vs. test.
     if not data_dir.endswith("/"):
@@ -980,7 +1002,7 @@ def _import_course_draft(
     # Remove absolute path, leaving relative <course_name>/drafts.
     draft_course_dir = draft_dir.replace(data_dir, '', 1)
 
-    system = ImportSystem(
+    system = XMLImportingModuleStoreRuntime(
         xmlstore=xml_module_store,
         course_id=source_course_id,
         course_dir=draft_course_dir,

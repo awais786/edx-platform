@@ -18,6 +18,7 @@ from openedx.core.djangolib.testing.utils import skip_unless_lms
 from openedx.core.djangoapps.course_groups.tests.helpers import CohortFactory
 
 from xmodule.modulestore.tests.django_utils import SharedModuleStoreTestCase  # lint-amnesty, pylint: disable=wrong-import-order
+from common.test.utils import assert_dict_contains_subset
 
 
 @skip_unless_lms
@@ -45,6 +46,12 @@ class CohortEventTest(SharedModuleStoreTestCase, OpenEdxEventsTestMixin):
         """
         super().setUpClass()
         cls.start_events_isolation()
+
+    @classmethod
+    def tearDownClass(cls):
+        """ Don't let our event isolation affect other test cases """
+        super().tearDownClass()
+        cls.enable_all_events()  # Re-enable events other than the ENABLED_OPENEDX_EVENTS subset we isolated.
 
     def setUp(self):  # pylint: disable=arguments-differ
         super().setUp()
@@ -84,7 +91,8 @@ class CohortEventTest(SharedModuleStoreTestCase, OpenEdxEventsTestMixin):
         )
 
         self.assertTrue(self.receiver_called)
-        self.assertDictContainsSubset(
+        assert_dict_contains_subset(
+            self,
             {
                 "signal": COHORT_MEMBERSHIP_CHANGED,
                 "sender": None,
@@ -104,5 +112,5 @@ class CohortEventTest(SharedModuleStoreTestCase, OpenEdxEventsTestMixin):
                     name=cohort_membership.course_user_group.name,
                 ),
             },
-            event_receiver.call_args.kwargs
+            event_receiver.call_args.kwargs,
         )

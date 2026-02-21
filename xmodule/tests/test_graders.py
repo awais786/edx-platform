@@ -4,14 +4,13 @@ Grading tests
 
 
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytest
 import ddt
-from pytz import UTC
 
 from lms.djangoapps.grades.scores import compute_percent
 from xmodule import graders
-from xmodule.graders import AggregatedScore, ProblemScore, ShowCorrectness, aggregate_scores
+from xmodule.graders import AggregatedScore, ProblemScore, aggregate_scores
 
 
 class GradesheetTest(unittest.TestCase):
@@ -70,9 +69,10 @@ class GraderTest(unittest.TestCase):
         """
         Mock class for SubsectionGrade object.
         """
-        def __init__(self, graded_total, display_name):
+        def __init__(self, graded_total, location, display_name):
             self.graded_total = graded_total
             self.display_name = display_name
+            self.location = location
 
         @property
         def percent_graded(self):
@@ -81,27 +81,64 @@ class GraderTest(unittest.TestCase):
     common_fields = dict(graded=True, first_attempted=datetime.now())
     test_gradesheet = {
         'Homework': {
-            'hw1': MockGrade(AggregatedScore(tw_earned=2, tw_possible=20.0, **common_fields), display_name='hw1'),
-            'hw2': MockGrade(AggregatedScore(tw_earned=16, tw_possible=16.0, **common_fields), display_name='hw2'),
+            'hw1': MockGrade(
+                AggregatedScore(tw_earned=2, tw_possible=20.0, **common_fields),
+                location='location_hw1_mock',
+                display_name='hw1'
+            ),
+            'hw2': MockGrade(
+                AggregatedScore(tw_earned=16, tw_possible=16.0, **common_fields),
+                location='location_hw2_mock',
+                display_name='hw2'
+            ),
         },
 
         # The dropped scores should be from the assignments that don't exist yet
         'Lab': {
             # Dropped
-            'lab1': MockGrade(AggregatedScore(tw_earned=1, tw_possible=2.0, **common_fields), display_name='lab1'),
-            'lab2': MockGrade(AggregatedScore(tw_earned=1, tw_possible=1.0, **common_fields), display_name='lab2'),
-            'lab3': MockGrade(AggregatedScore(tw_earned=1, tw_possible=1.0, **common_fields), display_name='lab3'),
+            'lab1': MockGrade(
+                AggregatedScore(tw_earned=1, tw_possible=2.0, **common_fields),
+                location='location_lab1_mock',
+                display_name='lab1'
+            ),
+            'lab2': MockGrade(
+                AggregatedScore(tw_earned=1, tw_possible=1.0, **common_fields),
+                location='location_lab2_mock',
+                display_name='lab2'
+            ),
+            'lab3': MockGrade(
+                AggregatedScore(tw_earned=1, tw_possible=1.0, **common_fields),
+                location='location_lab3_mock',
+                display_name='lab3'
+            ),
             # Dropped
-            'lab4': MockGrade(AggregatedScore(tw_earned=5, tw_possible=25.0, **common_fields), display_name='lab4'),
+            'lab4': MockGrade(
+                AggregatedScore(tw_earned=5, tw_possible=25.0, **common_fields),
+                location='location_lab4_mock',
+                display_name='lab4'
+            ),
             # Dropped
-            'lab5': MockGrade(AggregatedScore(tw_earned=3, tw_possible=4.0, **common_fields), display_name='lab5'),
-            'lab6': MockGrade(AggregatedScore(tw_earned=6, tw_possible=7.0, **common_fields), display_name='lab6'),
-            'lab7': MockGrade(AggregatedScore(tw_earned=5, tw_possible=6.0, **common_fields), display_name='lab7'),
+            'lab5': MockGrade(
+                AggregatedScore(tw_earned=3, tw_possible=4.0, **common_fields),
+                location='location_lab5_mock',
+                display_name='lab5'
+            ),
+            'lab6': MockGrade(
+                AggregatedScore(tw_earned=6, tw_possible=7.0, **common_fields),
+                location='location_lab6_mock',
+                display_name='lab6'
+            ),
+            'lab7': MockGrade(
+                AggregatedScore(tw_earned=5, tw_possible=6.0, **common_fields),
+                location='location_lab7_mock',
+                display_name='lab7'
+            ),
         },
 
         'Midterm': {
             'midterm': MockGrade(
                 AggregatedScore(tw_earned=50.5, tw_possible=100, **common_fields),
+                location='location_midterm_mock',
                 display_name="Midterm Exam",
             ),
         },
@@ -337,80 +374,43 @@ class GraderTest(unittest.TestCase):
             graders.grader_from_conf([invalid_conf])
         assert expected_error_message in str(error.value)
 
+    def test_sequential_location_in_section_breakdown(self):
+        homework_grader = graders.AssignmentFormatGrader("Homework", 12, 2)
+        lab_grader = graders.AssignmentFormatGrader("Lab", 7, 3)
+        midterm_grader = graders.AssignmentFormatGrader("Midterm", 1, 0)
 
-@ddt.ddt
-class ShowCorrectnessTest(unittest.TestCase):
-    """
-    Tests the correctness_available method
-    """
+        weighted_grader = graders.WeightedSubsectionsGrader([
+            (homework_grader, homework_grader.category, 0.25),
+            (lab_grader, lab_grader.category, 0.25),
+            (midterm_grader, midterm_grader.category, 0.5),
+        ])
 
-    def setUp(self):
-        super().setUp()
+        expected_sequential_ids = [
+            'location_hw1_mock',
+            'location_hw2_mock',
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            'location_lab1_mock',
+            'location_lab2_mock',
+            'location_lab3_mock',
+            'location_lab4_mock',
+            'location_lab5_mock',
+            'location_lab6_mock',
+            'location_lab7_mock',
+            None,
+            'location_midterm_mock',
+        ]
 
-        now = datetime.now(UTC)
-        day_delta = timedelta(days=1)
-        self.yesterday = now - day_delta
-        self.today = now
-        self.tomorrow = now + day_delta
+        graded = weighted_grader.grade(self.test_gradesheet)
 
-    def test_show_correctness_default(self):
-        """
-        Test that correctness is visible by default.
-        """
-        assert ShowCorrectness.correctness_available()
-
-    @ddt.data(
-        (ShowCorrectness.ALWAYS, True),
-        (ShowCorrectness.ALWAYS, False),
-        # Any non-constant values behave like "always"
-        ('', True),
-        ('', False),
-        ('other-value', True),
-        ('other-value', False),
-    )
-    @ddt.unpack
-    def test_show_correctness_always(self, show_correctness, has_staff_access):
-        """
-        Test that correctness is visible when show_correctness is turned on.
-        """
-        assert ShowCorrectness.correctness_available(show_correctness=show_correctness,
-                                                     has_staff_access=has_staff_access)
-
-    @ddt.data(True, False)
-    def test_show_correctness_never(self, has_staff_access):
-        """
-        Test that show_correctness="never" hides correctness from learners and course staff.
-        """
-        assert not ShowCorrectness.correctness_available(show_correctness=ShowCorrectness.NEVER,
-                                                         has_staff_access=has_staff_access)
-
-    @ddt.data(
-        # Correctness not visible to learners if due date in the future
-        ('tomorrow', False, False),
-        # Correctness is visible to learners if due date in the past
-        ('yesterday', False, True),
-        # Correctness is visible to learners if due date in the past (just)
-        ('today', False, True),
-        # Correctness is visible to learners if there is no due date
-        (None, False, True),
-        # Correctness is visible to staff if due date in the future
-        ('tomorrow', True, True),
-        # Correctness is visible to staff if due date in the past
-        ('yesterday', True, True),
-        # Correctness is visible to staff if there is no due date
-        (None, True, True),
-    )
-    @ddt.unpack
-    def test_show_correctness_past_due(self, due_date_str, has_staff_access, expected_result):
-        """
-        Test show_correctness="past_due" to ensure:
-        * correctness is always visible to course staff
-        * correctness is always visible to everyone if there is no due date
-        * correctness is visible to learners after the due date, when there is a due date.
-        """
-        if due_date_str is None:
-            due_date = None
-        else:
-            due_date = getattr(self, due_date_str)
-        assert ShowCorrectness.correctness_available(ShowCorrectness.PAST_DUE, due_date, has_staff_access) ==\
-               expected_result
+        for i, section_breakdown in enumerate(graded['section_breakdown']):
+            assert expected_sequential_ids[i] == section_breakdown.get('sequential_id')

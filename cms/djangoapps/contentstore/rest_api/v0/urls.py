@@ -7,14 +7,18 @@ from openedx.core.constants import COURSE_ID_PATTERN
 
 from .views import (
     AdvancedCourseSettingsView,
+    APIHeartBeatView,
     AuthoringGradingView,
-    CourseTabSettingsView,
     CourseTabListView,
     CourseTabReorderView,
+    CourseTabSettingsView,
+    LinkCheckStatusView,
+    LinkCheckView,
+    RerunLinkUpdateStatusView,
+    RerunLinkUpdateView,
     TranscriptView,
     YoutubeTranscriptCheckView,
     YoutubeTranscriptUploadView,
-    APIHeartBeatView
 )
 from .views import assets
 from .views import authoring_videos
@@ -63,7 +67,7 @@ urlpatterns = [
         authoring_videos.VideoEncodingsDownloadView.as_view(), name='cms_api_videos_encodings'
     ),
     re_path(
-        fr'grading/{settings.COURSE_ID_PATTERN}',
+        fr'grading/{settings.COURSE_ID_PATTERN}$',
         AuthoringGradingView.as_view(), name='cms_api_update_grading'
     ),
     path(
@@ -101,5 +105,24 @@ urlpatterns = [
     re_path(
         fr'^youtube_transcripts/{settings.COURSE_ID_PATTERN}/upload?$',
         YoutubeTranscriptUploadView.as_view(), name='cms_api_youtube_transcripts_upload'
+    ),
+
+    # Course Optimizer
+    re_path(
+        fr'^link_check/{settings.COURSE_ID_PATTERN}$',
+        LinkCheckView.as_view(), name='link_check'
+    ),
+    re_path(
+        fr'^link_check_status/{settings.COURSE_ID_PATTERN}$',
+        LinkCheckStatusView.as_view(), name='link_check_status'
+    ),
+
+    re_path(
+        fr'^rerun_link_update/{settings.COURSE_ID_PATTERN}$',
+        RerunLinkUpdateView.as_view(), name='rerun_link_update'
+    ),
+    re_path(
+        fr'^rerun_link_update_status/{settings.COURSE_ID_PATTERN}$',
+        RerunLinkUpdateStatusView.as_view(), name='rerun_link_update_status'
     ),
 ]

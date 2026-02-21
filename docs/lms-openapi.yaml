@@ -13,8 +13,44 @@ produces:
 securityDefinitions:
   Basic:
     type: basic
+    description: Obtain with a `POST` request to `/user/v1/account/login_session/`.  If
+      needed, copy the cookies from the response to your new call.
+  jwt:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: |2
+
+      Obtain by making a `POST` request to `/oauth2/v1/access_token`.
+
+      You will need to be logged in and have a client ID and secret already created.
+
+      Your request should have the headers
+
+      ```
+      'Content-Type': 'application/x-www-form-urlencoded'
+      ```
+
+      Your request should have the data payload
+
+      ```
+      'grant_type': 'client_credentials'
+      'client_id': [your client ID]
+      'client_secret':  [your client secret]
+      'token_type': 'jwt'
+      ```
+
+      Your JWT will be returned in the response as `access_token`. Prefix with `JWT ` in your header.
+  csrf:
+    type: apiKey
+    name: X-CSRFToken
+    in: header
+    description: Obtain by making a `GET` request to `/csrf/api/v1/token`. The token
+      will be in the response cookie `csrftoken`.
 security:
 - Basic: []
+- csrf: []
+- jwt: []
 paths:
   /agreements/v1/integrity_signature/{course_id}:
     get:
@@ -86,6 +122,157 @@ paths:
       in: path
       required: true
       type: string
+  /authz/v1/permissions/validate/me:
+    post:
+      operationId: authz_v1_permissions_validate_me_create
+      summary: Validate one or more permissions for the authenticated user.
+      description: Validate one or more permissions for the authenticated user.
+      parameters:
+      - name: data
+        in: body
+        required: true
+        schema:
+          description: The permissions to validate
+          type: array
+          items:
+            $ref: '#/definitions/PermissionValidation'
+      responses:
+        '200':
+          description: ''
+          schema:
+            $ref: '#/definitions/PermissionValidationResponse'
+        '400':
+          description: The request data is invalid
+        '401':
+          description: The user is not authenticated
+      tags:
+      - authz
+    parameters: []
+  /authz/v1/roles/:
+    get:
+      operationId: authz_v1_roles_list
+      summary: Retrieve all roles and their permissions for a specific scope.
+      description: Retrieve all roles and their permissions for a specific scope.
+      parameters:
+      - name: scope
+        in: query
+        description: The scope to query roles for
+        type: string
+      - name: page
+        in: query
+        description: Page number for pagination
+        type: integer
+      - name: page_size
+        in: query
+        description: Number of items per page
+        type: integer
+      responses:
+        '200':
+          description: ''
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/ListRolesWithScopeResponse'
+        '400':
+          description: The request parameters are invalid
+        '401':
+          description: The user is not authenticated or does not have the required
+            permissions
+      tags:
+      - authz
+    parameters: []
+  /authz/v1/roles/users/:
+    get:
+      operationId: authz_v1_roles_users_list
+      summary: Retrieve all users with role assignments within a specific scope.
+      description: Retrieve all users with role assignments within a specific scope.
+      parameters:
+      - name: scope
+        in: query
+        description: The authorization scope for the role
+        type: string
+      - name: search
+        in: query
+        description: The search query to filter users by
+        type: string
+      - name: roles
+        in: query
+        description: The names of the roles to query
+        type: string
+      - name: page
+        in: query
+        description: Page number for pagination
+        type: integer
+      - name: page_size
+        in: query
+        description: Number of items per page
+        type: integer
+      - name: sort_by
+        in: query
+        description: The field to sort by
+        type: string
+      - name: order
+        in: query
+        description: The order to sort by
+        type: string
+      responses:
+        '200':
+          description: The users were retrieved successfully
+        '400':
+          description: The request parameters are invalid
+        '401':
+          description: The user is not authenticated or does not have the required
+            permissions
+      tags:
+      - authz
+    put:
+      operationId: authz_v1_roles_users_update
+      summary: Assign multiple users to a specific role within a scope.
+      description: Assign multiple users to a specific role within a scope.
+      parameters:
+      - name: data
+        in: body
+        required: true
+        schema:
+          $ref: '#/definitions/AddUsersToRoleWithScope'
+      responses:
+        '207':
+          description: The users were added to the role
+        '400':
+          description: The request data is invalid
+        '401':
+          description: The user is not authenticated or does not have the required
+            permissions
+      tags:
+      - authz
+    delete:
+      operationId: authz_v1_roles_users_delete
+      summary: Remove multiple users from a specific role within a scope.
+      description: Remove multiple users from a specific role within a scope.
+      parameters:
+      - name: users
+        in: query
+        description: List of user identifiers (username or email) separated by a comma
+        type: string
+      - name: role
+        in: query
+        description: The role to remove the users from
+        type: string
+      - name: scope
+        in: query
+        description: The scope to remove the users from
+        type: string
+      responses:
+        '207':
+          description: The users were removed from the role
+        '400':
+          description: The request parameters are invalid
+        '401':
+          description: The user is not authenticated or does not have the required
+            permissions
+      tags:
+      - authz
+    parameters: []
   /bookmarks/v1/bookmarks/:
     get:
       operationId: bookmarks_v1_bookmarks_list
@@ -442,10 +629,9 @@ paths:
       parameters: []
       responses:
         '200':
-          description: ''
+          description: Successful response with cohort details.
           schema:
-            type: object
-            properties: {}
+            $ref: '#/definitions/Cohort'
       tags:
       - cohorts
     post:
@@ -456,32 +642,26 @@ paths:
         in: body
         required: true
         schema:
-          type: object
-          properties: {}
+          $ref: '#/definitions/CohortCreate'
       responses:
-        '201':
-          description: ''
+        '200':
+          description: Successful response with created cohort details.
           schema:
-            type: object
-            properties: {}
+            $ref: '#/definitions/Cohort'
       tags:
       - cohorts
     patch:
       operationId: cohorts_v1_courses_cohorts_partial_update
-      description: Endpoint to update a cohort name and/or assignment type.
+      description: Endpoint to update a cohort name, assignment type, and/or content group association.
       parameters:
       - name: data
         in: body
         required: true
         schema:
-          type: object
-          properties: {}
+          $ref: '#/definitions/CohortUpdate'
       responses:
-        '200':
-          description: ''
-          schema:
-            type: object
-            properties: {}
+        '204':
+          description: Successful update, no content returned.
       tags:
       - cohorts
     parameters:
@@ -801,6 +981,21 @@ paths:
       in: path
       required: true
       type: string
+  /course_experience/v1/reset_all_course_deadlines/:
+    post:
+      operationId: course_experience_v1_reset_all_course_deadlines_create
+      summary: Set the start_date of a schedule to today for all enrolled courses
+      description: |-
+        Request Parameters:
+            research_event_data: any data that should be included in the research tracking event
+                Example: sending the location of where the reset deadlines banner (i.e. outline-tab)
+      parameters: []
+      responses:
+        '201':
+          description: ''
+      tags:
+      - course_experience
+    parameters: []
   /course_experience/v1/reset_course_deadlines:
     post:
       operationId: course_experience_v1_reset_course_deadlines_create
@@ -1124,6 +1319,7 @@ paths:
                     assignment_type: (str) the format, if any, of the Subsection (Homework, Exam, etc)
                     block_key: (str) the key of the given subsection block
                     display_name: (str) a str of what the name of the Subsection is for displaying on the site
+                    due: (str or None) the due date of the subsection in ISO 8601 format, or None if no due date is set
                     has_graded_assignment: (bool) whether or not the Subsection is a graded assignment
                     learner_has_access: (bool) whether the learner has access to the subsection (could be FBE gated)
                     num_points_earned: (int) the amount of points the user has earned for the given subsection
@@ -1228,6 +1424,7 @@ paths:
                     assignment_type: (str) the format, if any, of the Subsection (Homework, Exam, etc)
                     block_key: (str) the key of the given subsection block
                     display_name: (str) a str of what the name of the Subsection is for displaying on the site
+                    due: (str or None) the due date of the subsection in ISO 8601 format, or None if no due date is set
                     has_graded_assignment: (bool) whether or not the Subsection is a graded assignment
                     learner_has_access: (bool) whether the learner has access to the subsection (could be FBE gated)
                     num_points_earned: (int) the amount of points the user has earned for the given subsection
@@ -1619,6 +1816,7 @@ paths:
                     assignment_type: (str) the format, if any, of the Subsection (Homework, Exam, etc)
                     block_key: (str) the key of the given subsection block
                     display_name: (str) a str of what the name of the Subsection is for displaying on the site
+                    due: (str or None) the due date of the subsection in ISO 8601 format, or None if no due date is set
                     has_graded_assignment: (bool) whether or not the Subsection is a graded assignment
                     learner_has_access: (bool) whether the learner has access to the subsection (could be FBE gated)
                     num_points_earned: (int) the amount of points the user has earned for the given subsection
@@ -1723,6 +1921,7 @@ paths:
                     assignment_type: (str) the format, if any, of the Subsection (Homework, Exam, etc)
                     block_key: (str) the key of the given subsection block
                     display_name: (str) a str of what the name of the Subsection is for displaying on the site
+                    due: (str or None) the due date of the subsection in ISO 8601 format, or None if no due date is set
                     has_graded_assignment: (bool) whether or not the Subsection is a graded assignment
                     learner_has_access: (bool) whether the learner has access to the subsection (could be FBE gated)
                     num_points_earned: (int) the amount of points the user has earned for the given subsection
@@ -1922,7 +2121,7 @@ paths:
       type: string
   /course_modes/v1/courses/{course_id}/:
     get:
-      operationId: course_modes_v1_courses_read
+      operationId: course_modes_v1_courses_list
       summary: View to list or create course modes for a course.
       description: |-
         **Use Case**
@@ -2185,7 +2384,7 @@ paths:
       type: string
   /courses/v1/block_metadata/{usage_key_string}:
     get:
-      operationId: courses_v1_block_metadata_read
+      operationId: courses_v1_block_metadata_list
       summary: '**Use Case**'
       description: |-
         Returns the block metadata. Data like index_dictionary related to a
@@ -2291,7 +2490,7 @@ paths:
     parameters: []
   /courses/v1/blocks/{usage_key_string}:
     get:
-      operationId: courses_v1_blocks_read
+      operationId: courses_v1_blocks_list
       summary: '**Use Case**'
       description: |-
         Returns the blocks within the requested block tree according to the
@@ -2587,6 +2786,7 @@ paths:
         **Example Requests**
 
             GET /api/courses/v1/courses/
+            POST /api/courses/v1/courses/
 
         **Response Values**
 
@@ -2662,6 +2862,10 @@ paths:
                     "start_type": "timestamp"
                   }
                 ]
+        **Note**
+
+            The POST /api/courses/v1/courses/ reads `request.body` for parameters, allowing for
+            larger input than the query string.
       parameters:
       - name: page
         in: query
@@ -2696,6 +2900,22 @@ paths:
                 type: array
                 items:
                   $ref: '#/definitions/Course'
+      tags:
+      - courses
+    post:
+      operationId: courses_v1_courses_create
+      description: POST courses filter.
+      parameters:
+      - name: data
+        in: body
+        required: true
+        schema:
+          $ref: '#/definitions/Course'
+      responses:
+        '201':
+          description: ''
+          schema:
+            $ref: '#/definitions/Course'
       tags:
       - courses
     parameters: []
@@ -2804,7 +3024,7 @@ paths:
       type: string
   /courses/v2/block_metadata/{usage_key_string}:
     get:
-      operationId: courses_v2_block_metadata_read
+      operationId: courses_v2_block_metadata_list
       summary: '**Use Case**'
       description: |-
         Returns the block metadata. Data like index_dictionary related to a
@@ -2910,7 +3130,7 @@ paths:
     parameters: []
   /courses/v2/blocks/{usage_key_string}:
     get:
-      operationId: courses_v2_blocks_read
+      operationId: courses_v2_blocks_list
       summary: '**Use Case**'
       description: |-
         Returns the blocks within the requested block tree according to the
@@ -3210,9 +3430,45 @@ paths:
             * certificate_data: data regarding the effective user's certificate for the given course
             * verify_identity_url: URL for a learner to verify their identity. Only returned for learners enrolled in a
                 verified mode. Will update to reverify URL if necessary.
+            * verification_status: The verification status of the effective user in the course. Possible values:
+                * 'none': No verification has been created for the user
+                * 'expired': The verification has expired
+                * 'approved': The verification has been approved
+                * 'pending': The verification is pending
+                * 'must_reverify': The user must reverify their identity
             * linkedin_add_to_profile_url: URL to add the effective user's certificate to a LinkedIn Profile.
             * user_needs_integrity_signature: Whether the user needs to sign the integrity agreement for the course
             * learning_assistant_enabled: Whether the Xpert Learning Assistant is enabled for the requesting user
+            * show_courseware_link: Whether the courseware link should be shown in the course details page
+            * is_course_full: Whether the course is full
+            * can_enroll: Whether the user can enroll in the course
+            * invitation_only: Whether the course is invitation only
+            * is_shib_course: Whether the course is a Shibboleth course
+            * allow_anonymous: Whether the course allows anonymous access
+            * ecommerce_checkout: Whether the course has an ecommerce checkout
+            * single_paid_mode: An object representing the single paid mode for the course, if it exists
+                * sku: (str) The SKU for the single paid mode
+                * name: (str) The name of the single paid mode
+                * min_price: (str) The minimum price for the single paid mode, formatted with the currency symbol
+                * description: (str) The description of the single paid mode
+            * ecommerce_checkout_link: The ecommerce checkout link for the course, if it exists
+            * course_image_urls: A list of course image URLs
+            * start_date_is_still_default: Whether the course start date is still the default value
+            * advertised_start: The advertised start date of the course
+            * course_price: The course price, formatted with the currency symbol
+            * pre_requisite_courses: A list of pre-requisite courses for the course
+            * about_sidebar_html: The HTML content for the course about section, if enabled
+            * display_number_with_default: The course number with the org name, if set
+            * display_org_with_default: The org name with the course number, if set
+            * content_type_gating_enabled: Whether the content type gating is enabled for the course
+            * show_calculator: Whether the calculator should be shown in the course details page
+            * can_access_proctored_exams: Whether the user is eligible to access proctored exams
+            * notes: An object containing note settings for the course
+                * enabled: Boolean indicating whether edxnotes feature is enabled for the course
+                * visible: Boolean indicating whether notes are visible in the course
+            * marketing_url: The marketing URL for the course
+            * overview: The overview HTML content for the course
+            * license: The license for the course
 
         **Parameters:**
 
@@ -3430,11 +3686,127 @@ paths:
       in: path
       required: true
       type: string
+  /dashboard/v0/programs/:
+    get:
+      operationId: dashboard_v0_programs_list
+      description: |-
+        For a learner, get list of enrolled programs with progress.
+        If an enterprise UUID ias provided, filter out all non-enterprise enrollments for the learner.
+
+        **Example Request**
+
+            GET /api/dashboard/v1/programs/{enterprise_uuid}/
+
+        **Parameters**
+
+        * `enterprise_uuid`: UUID of an enterprise customer.
+
+        **Example Response**
+
+            [
+                {
+                    "uuid": "ff41a5eb-2a73-4933-8e80-a1c66068ed2c",
+                    "title": "Demonstration Program",
+                    "type": "MicroMasters",
+                    "banner_image": {
+                        "large": {
+                            "url": "http://example.com/images/foo.large.jpg",
+                            "width": 1440,
+                            "height": 480
+                        },
+                        "medium": {
+                            "url": "http://example.com/images/foo.medium.jpg",
+                            "width": 726,
+                            "height": 242
+                        },
+                        "small": {
+                            "url": "http://example.com/images/foo.small.jpg",
+                            "width": 435,
+                            "height": 145
+                        },
+                        "x-small": {
+                            "url": "http://example.com/images/foo.x-small.jpg",
+                            "width": 348,
+                            "height": 116
+                        }
+                    },
+                    "authoring_organizations": [
+                        {
+                            "key": "example"
+                        }
+                    ],
+                    "progress": {
+                        "uuid": "ff41a5eb-2a73-4933-8e80-a1c66068ed2c",
+                        "completed": 0,
+                        "in_progress": 0,
+                        "not_started": 2
+                    }
+                }
+            ]
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - dashboard
+    parameters: []
   /dashboard/v0/programs/{enterprise_uuid}/:
     get:
       operationId: dashboard_v0_programs_read
-      description: Return a list of a enterprise learner's all enrolled programs with
-        their progress.
+      description: |-
+        For a learner, get list of enrolled programs with progress.
+        If an enterprise UUID ias provided, filter out all non-enterprise enrollments for the learner.
+
+        **Example Request**
+
+            GET /api/dashboard/v1/programs/{enterprise_uuid}/
+
+        **Parameters**
+
+        * `enterprise_uuid`: UUID of an enterprise customer.
+
+        **Example Response**
+
+            [
+                {
+                    "uuid": "ff41a5eb-2a73-4933-8e80-a1c66068ed2c",
+                    "title": "Demonstration Program",
+                    "type": "MicroMasters",
+                    "banner_image": {
+                        "large": {
+                            "url": "http://example.com/images/foo.large.jpg",
+                            "width": 1440,
+                            "height": 480
+                        },
+                        "medium": {
+                            "url": "http://example.com/images/foo.medium.jpg",
+                            "width": 726,
+                            "height": 242
+                        },
+                        "small": {
+                            "url": "http://example.com/images/foo.small.jpg",
+                            "width": 435,
+                            "height": 145
+                        },
+                        "x-small": {
+                            "url": "http://example.com/images/foo.x-small.jpg",
+                            "width": 348,
+                            "height": 116
+                        }
+                    },
+                    "authoring_organizations": [
+                        {
+                            "key": "example"
+                        }
+                    ],
+                    "progress": {
+                        "uuid": "ff41a5eb-2a73-4933-8e80-a1c66068ed2c",
+                        "completed": 0,
+                        "in_progress": 0,
+                        "not_started": 2
+                    }
+                }
+            ]
       parameters: []
       responses:
         '200':
@@ -3449,7 +3821,118 @@ paths:
   /dashboard/v0/programs/{program_uuid}/progress_details/:
     get:
       operationId: dashboard_v0_programs_progress_details_list
-      description: Retrieves progress details of a user in a specified program.
+      summary: Retrieves progress details of a learner in a specified program.
+      description: |-
+        **Example Request**
+
+            GET api/dashboard/v1/programs/{program_uuid}/progress_details/
+
+        **Parameters**
+
+        * `program_uuid`: A string representation of the uuid of the program.
+
+        **Response Values**
+
+        If the request for information about the program is successful, an HTTP 200 "OK" response
+        is returned.
+
+        The HTTP 200 response has the following values.
+
+        * `urls`: Urls to enroll/purchase a course or view program record.
+
+        * `program_data`: Holds meta information about the program.
+
+        * `course_data`: Learner's progress details for all courses in the program (in-progress/remaining/completed).
+
+        * `certificate_data`: Details about learner's certificates status for all courses in the program and the
+            program itself.
+
+        * `industry_pathways`: Industry pathways for the program, comes under additional credit opportunities.
+
+        * `credit_pathways`: Credit pathways for the program, comes under additional credit opportunities.
+
+        **Example Response**
+
+            {
+                "urls": {
+                    "program_listing_url": "/dashboard/programs/",
+                    "track_selection_url": "/course_modes/choose/",
+                    "commerce_api_url": "/api/commerce/v1/baskets/",
+                    "buy_button_url": "http://example.com/basket/add/?",
+                    "program_record_url": "https://example.com/records/programs/8675309"
+                },
+                "program_data": {
+                    "uuid": "a156a6e2-de91-4ce7-947a-888943e6b12a",
+                    "title": "Demonstration Program",
+                    "subtitle": "",
+                    "type": "MicroMasters",
+                    "status": "active",
+                    "marketing_slug": "demo-program",
+                    "marketing_url": "micromasters/demo-program",
+                    "authoring_organizations": [],
+                    "card_image_url": "http://example.com/asset-v1:DemoX+Demo_Course.jpg",
+                    "is_program_eligible_for_one_click_purchase": false,
+                    "pathway_ids": [
+                        1,
+                        2
+                    ],
+                    "is_learner_eligible_for_one_click_purchase": false,
+                    "skus": ["AUD90210"],
+                },
+                "course_data": {
+                    "uuid": "a156a6e2-de91-4ce7-947a-888943e6b12a",
+                    "completed": [],
+                    "in_progress": [],
+                    "not_started": [
+                        {
+                            "key": "example+DemoX",
+                            "uuid": "fe1a9ad4-a452-45cd-80e5-9babd3d43f96",
+                            "title": "Demonstration Course",
+                            "course_runs": [],
+                            "entitlements": [],
+                            "owners": [],
+                            "image": "",
+                            "short_description": "",
+                            "type": "457f07ec-a78f-45b4-ba09-5fb176520d8a",
+                        }
+                    ],
+                },
+                "certificate_data": [{
+                    "type": "course",
+                    "title": "Demo Course",
+                    'url': "/certificates/8675309",
+                }],
+                "industry_pathways": [
+                    {
+                        "id": 2,
+                        "uuid": "1b8fadf1-f6aa-4282-94e3-325b922a027f",
+                        "name": "Demo Industry Pathway",
+                        "org_name": "example",
+                        "email": "example@example.com",
+                        "description": "Sample demo industry pathway",
+                        "destination_url": "http://example.edu/online/pathways/example-methods",
+                        "pathway_type": "industry",
+                        "program_uuids": [
+                            "a156a6e2-de91-4ce7-947a-888943e6b12a"
+                        ]
+                    }
+                ],
+                "credit_pathways": [
+                    {
+                        "id": 1,
+                        "uuid": "86b9701a-61e6-48a2-92eb-70a824521c1f",
+                        "name": "Demo Credit Pathway",
+                        "org_name": "example",
+                        "email": "example@example.com",
+                        "description": "Sample demo credit pathway!",
+                        "destination_url": "http://example.edu/online/pathways/example-thinking",
+                        "pathway_type": "credit",
+                        "program_uuids": [
+                            "a156a6e2-de91-4ce7-947a-888943e6b12a"
+                        ]
+                    }
+                ]
+            }
       parameters: []
       responses:
         '200':
@@ -3461,29 +3944,6 @@ paths:
       in: path
       required: true
       type: string
-  /demographics/v1/demographics/status/:
-    get:
-      operationId: demographics_v1_demographics_status_list
-      summary: GET /api/user/v1/accounts/demographics/status
-      description: This is a Web API to determine the status of demographics related
-        features
-      parameters: []
-      responses:
-        '200':
-          description: ''
-      tags:
-      - demographics
-    patch:
-      operationId: demographics_v1_demographics_status_partial_update
-      summary: PATCH /api/user/v1/accounts/demographics/status
-      description: This is a Web API to update fields that are dependent on user interaction.
-      parameters: []
-      responses:
-        '200':
-          description: ''
-      tags:
-      - demographics
-    parameters: []
   /discounts/course/{course_key_string}:
     get:
       operationId: discounts_course_read
@@ -3540,6 +4000,21 @@ paths:
       tags:
       - discussion
     parameters: []
+  /discussion/v1/bulk_delete_user_posts/{course_id}:
+    post:
+      operationId: discussion_v1_bulk_delete_user_posts_create
+      description: Implements the delete user posts endpoint.
+      parameters: []
+      responses:
+        '201':
+          description: ''
+      tags:
+      - discussion
+    parameters:
+    - name: course_id
+      in: path
+      required: true
+      type: string
   /discussion/v1/comments/:
     get:
       operationId: discussion_v1_comments_list
@@ -3953,276 +4428,6 @@ paths:
       - discussion
     parameters:
     - name: course_id
-      in: path
-      required: true
-      type: string
-  /edx_name_affirmation/v1/verified_name:
-    get:
-      operationId: edx_name_affirmation_v1_verified_name_list
-      summary: Get most recent verified name for the request user or for the specified
-        username
-      description: |-
-        For example: /edx_name_affirmation/v1/verified_name?username=jdoe
-        Example response: {
-            "username": "jdoe",
-            "verified_name": "Jonathan Doe",
-            "profile_name": "Jon Doe",
-            "verification_attempt_id": 123,
-            "proctored_exam_attempt_id": None,
-            "status": "approved",
-            "use_verified_name_for_certs": False,
-        }
-      parameters:
-      - name: username
-        in: query
-        description: The username of which verified name records might be associated
-        type: string
-      responses:
-        '200':
-          description: The verified_name record associated with the username provided
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '404':
-          description: The verified_name record associated with the username provided
-            does not exist.
-      tags:
-      - edx_name_affirmation
-    post:
-      operationId: edx_name_affirmation_v1_verified_name_create
-      summary: Creates a new VerifiedName.
-      description: |-
-        Expected POST data: {
-            "username": "jdoe",
-            "verified_name": "Jonathan Doe"
-            "profile_name": "Jon Doe"
-            "verification_attempt_id": (Optional)
-            "proctored_exam_attempt_id": (Optional)
-            "status": (Optional)
-        }
-      parameters:
-      - name: data
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/VerifiedName'
-      responses:
-        '200':
-          description: The verified_name record associated with the username provided
-            is successfully created
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '400':
-          description: The posted data have conflicts with already stored verified
-            name
-      tags:
-      - edx_name_affirmation
-    patch:
-      operationId: edx_name_affirmation_v1_verified_name_partial_update
-      summary: Update verified name status
-      description: |-
-        Example PATCH data: {
-                "username": "jdoe",
-                "verification_attempt_id" OR "proctored_exam_attempt_id": 123,
-                "status": "approved",
-            }
-      parameters:
-      - name: data
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/UpdateVerifiedName'
-      responses:
-        '200':
-          description: The verified_name record associated with the username provided
-            is successfully edited
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '400':
-          description: The edit action failed validation rules
-      tags:
-      - edx_name_affirmation
-    delete:
-      operationId: edx_name_affirmation_v1_verified_name_delete
-      summary: Delete verified name
-      description: /edx_name_affirmation/v1/verified_name/{verified_name_id}
-      parameters:
-      - name: verified_name_id
-        in: path
-        description: The database id of the verified_name to be deleted
-        type: string
-        required: true
-      responses:
-        '204':
-          description: The verified_name record associated with the id is successfully
-            deleted from data store
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '404':
-          description: The verified_name record associated with the id provided does
-            not exist.
-      tags:
-      - edx_name_affirmation
-    parameters: []
-  /edx_name_affirmation/v1/verified_name/config:
-    post:
-      operationId: edx_name_affirmation_v1_verified_name_config_create
-      summary: Create VerifiedNameConfig
-      description: Create VerifiedNameConfig
-      parameters:
-      - name: data
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/VerifiedNameConfig'
-      responses:
-        '201':
-          description: The verified_name configuration record is successfully created
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '400':
-          description: The POSTed data failed validation rules
-      tags:
-      - edx_name_affirmation
-    parameters: []
-  /edx_name_affirmation/v1/verified_name/history:
-    get:
-      operationId: edx_name_affirmation_v1_verified_name_history_list
-      summary: Get a list of verified name objects for the given user, ordered by
-        most recently created.
-      description: Get a list of verified name objects for the given user, ordered
-        by most recently created.
-      parameters:
-      - name: username
-        in: query
-        description: The username of which verified name records might be associated
-        type: string
-      responses:
-        '200':
-          description: The verified_name record associated with the username provided
-            is successfully edited
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-      tags:
-      - edx_name_affirmation
-    parameters: []
-  /edx_name_affirmation/v1/verified_name/{verified_name_id}:
-    get:
-      operationId: edx_name_affirmation_v1_verified_name_read
-      summary: Get most recent verified name for the request user or for the specified
-        username
-      description: |-
-        For example: /edx_name_affirmation/v1/verified_name?username=jdoe
-        Example response: {
-            "username": "jdoe",
-            "verified_name": "Jonathan Doe",
-            "profile_name": "Jon Doe",
-            "verification_attempt_id": 123,
-            "proctored_exam_attempt_id": None,
-            "status": "approved",
-            "use_verified_name_for_certs": False,
-        }
-      parameters:
-      - name: username
-        in: query
-        description: The username of which verified name records might be associated
-        type: string
-      responses:
-        '200':
-          description: The verified_name record associated with the username provided
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '404':
-          description: The verified_name record associated with the username provided
-            does not exist.
-      tags:
-      - edx_name_affirmation
-    post:
-      operationId: edx_name_affirmation_v1_verified_name_create
-      summary: Creates a new VerifiedName.
-      description: |-
-        Expected POST data: {
-            "username": "jdoe",
-            "verified_name": "Jonathan Doe"
-            "profile_name": "Jon Doe"
-            "verification_attempt_id": (Optional)
-            "proctored_exam_attempt_id": (Optional)
-            "status": (Optional)
-        }
-      parameters:
-      - name: data
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/VerifiedName'
-      responses:
-        '200':
-          description: The verified_name record associated with the username provided
-            is successfully created
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '400':
-          description: The posted data have conflicts with already stored verified
-            name
-      tags:
-      - edx_name_affirmation
-    patch:
-      operationId: edx_name_affirmation_v1_verified_name_partial_update
-      summary: Update verified name status
-      description: |-
-        Example PATCH data: {
-                "username": "jdoe",
-                "verification_attempt_id" OR "proctored_exam_attempt_id": 123,
-                "status": "approved",
-            }
-      parameters:
-      - name: data
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/UpdateVerifiedName'
-      responses:
-        '200':
-          description: The verified_name record associated with the username provided
-            is successfully edited
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '400':
-          description: The edit action failed validation rules
-      tags:
-      - edx_name_affirmation
-    delete:
-      operationId: edx_name_affirmation_v1_verified_name_delete
-      summary: Delete verified name
-      description: /edx_name_affirmation/v1/verified_name/{verified_name_id}
-      parameters:
-      - name: verified_name_id
-        in: path
-        description: The database id of the verified_name to be deleted
-        type: string
-        required: true
-      responses:
-        '204':
-          description: The verified_name record associated with the id is successfully
-            deleted from data store
-        '403':
-          description: User lacks required permission. Only an edX staff user can
-            invoke this API
-        '404':
-          description: The verified_name record associated with the id provided does
-            not exist.
-      tags:
-      - edx_name_affirmation
-    parameters:
-    - name: verified_name_id
       in: path
       required: true
       type: string
@@ -5010,6 +5215,8 @@ paths:
 
             GET /api/enrollment/v1/enrollments?course_id={course_id}
 
+            GET /api/enrollment/v1/enrollments?course_ids={course_id},{course_id},{course_id}
+
             GET /api/enrollment/v1/enrollments?username={username},{username},{username}
 
             GET /api/enrollment/v1/enrollments?course_id={course_id}&username={username}
@@ -5020,6 +5227,10 @@ paths:
 
             * course_id: Filters the result to course enrollments for the course corresponding to the
               given course ID. The value must be URL encoded. Optional.
+
+            * course_ids: List of comma-separated course IDs. Filters the result to course enrollments
+              for the courses corresponding to the given course IDs. Course IDs could be course run IDs
+              or course IDs. The value must be URL encoded. Optional.
 
             * username: List of comma-separated usernames. Filters the result to the course enrollments
               of the given users. Optional.
@@ -5132,22 +5343,22 @@ paths:
       parameters:
       - name: uuid
         in: query
-        description: uuid
+        description: ''
         required: false
         type: string
       - name: user
         in: query
-        description: user
+        description: ''
         required: false
         type: string
       - name: course_uuid
         in: query
-        description: course_uuid
+        description: ''
         required: false
         type: string
       - name: expired_at__isnull
         in: query
-        description: expired_at__isnull
+        description: ''
         required: false
         type: string
       - name: page
@@ -5300,19 +5511,6 @@ paths:
       required: true
       type: string
       format: uuid
-  /entitlements/v1/subscriptions/entitlements/revoke:
-    post:
-      operationId: entitlements_v1_subscriptions_entitlements_revoke_create
-      description: |-
-        Invokes the entitlements expiration process for the provided uuids and downgrades the
-        enrollments to Audit mode.
-      parameters: []
-      responses:
-        '201':
-          description: ''
-      tags:
-      - entitlements
-    parameters: []
   /experiments/v0/custom/REV-934/:
     get:
       operationId: experiments_v0_custom_REV-934_list
@@ -5351,12 +5549,12 @@ paths:
       parameters:
       - name: experiment_id
         in: query
-        description: experiment_id
+        description: ''
         required: false
         type: string
       - name: key
         in: query
-        description: key
+        description: ''
         required: false
         type: string
       - name: page
@@ -5493,12 +5691,12 @@ paths:
       parameters:
       - name: experiment_id
         in: query
-        description: experiment_id
+        description: ''
         required: false
         type: string
       - name: key
         in: query
-        description: key
+        description: ''
         required: false
         type: string
       - name: page
@@ -5711,7 +5909,7 @@ paths:
       type: string
   /grades/v1/policy/courses/{course_id}/:
     get:
-      operationId: grades_v1_policy_courses_read
+      operationId: grades_v1_policy_courses_list
       summary: '**Use Case**'
       description: |-
         Get the course grading policy.
@@ -5845,7 +6043,7 @@ paths:
       operationId: grades_v1_submission_history_read
       description: |-
         Get submission history details. This submission history is related to only
-        ProblemBlock and it doesn't support LibraryContentBlock or ContentLibraries
+        ProblemBlock and it doesn't support LegacyLibraryContentBlock or ContentLibraries
         as of now.
 
         **Usecases**:
@@ -6115,6 +6313,177 @@ paths:
       in: path
       required: true
       type: string
+  /instructor/v2/courses/{course_id}:
+    get:
+      operationId: instructor_v2_courses_read
+      summary: Retrieve comprehensive course information including metadata, enrollment
+        statistics,
+      description: |-
+        dashboard configuration, and user permissions.
+
+        **Use Cases**
+
+            Retrieve comprehensive course metadata including enrollment counts, dashboard configuration,
+            permissions, and navigation sections.
+
+        **Example Requests**
+
+            GET /api/instructor/v2/courses/{course_id}
+
+        **Response Values**
+
+            {
+                "course_id": "course-v1:edX+DemoX+Demo_Course",
+                "display_name": "Demonstration Course",
+                "org": "edX",
+                "course_number": "DemoX",
+                "enrollment_start": "2013-02-05T00:00:00Z",
+                "enrollment_end": null,
+                "start": "2013-02-05T05:00:00Z",
+                "end": "2024-12-31T23:59:59Z",
+                "pacing": "instructor",
+                "has_started": true,
+                "has_ended": false,
+                "total_enrollment": 150,
+                "enrollment_counts": {
+                    "total": 150,
+                    "audit": 100,
+                    "verified": 40,
+                    "honor": 10
+                },
+                "num_sections": 12,
+                "grade_cutoffs": "A is 0.9, B is 0.8, C is 0.7, D is 0.6",
+                "course_errors": [],
+                "studio_url": "https://studio.example.com/course/course-v1:edX+DemoX+2024",
+                "permissions": {
+                    "admin": false,
+                    "instructor": true,
+                    "finance_admin": false,
+                    "sales_admin": false,
+                    "staff": true,
+                    "forum_admin": true,
+                    "data_researcher": false
+                },
+                "tabs": [
+                    {
+                      "tab_id": "courseware",
+                      "title": "Course",
+                      "url": "INSTRUCTOR_MICROFRONTEND_URL/courses/course-v1:edX+DemoX+2024/courseware"
+                    },
+                    {
+                      "tab_id": "progress",
+                      "title": "Progress",
+                      "url": "INSTRUCTOR_MICROFRONTEND_URL/courses/course-v1:edX+DemoX+2024/progress"
+                    },
+                ],
+                "disable_buttons": false,
+                "analytics_dashboard_message": "To gain insights into student enrollment and participation..."
+            }
+
+        **Parameters**
+
+            course_key: Course key for the course.
+
+        **Returns**
+
+            * 200: OK - Returns course metadata
+            * 401: Unauthorized - User is not authenticated
+            * 403: Forbidden - User lacks instructor permissions
+            * 404: Not Found - Course does not exist
+      parameters:
+      - name: course_id
+        in: path
+        description: Course key for the course.
+        type: string
+        required: true
+      responses:
+        '200':
+          description: ''
+          schema:
+            $ref: '#/definitions/CourseInformationSerializerV2'
+        '401':
+          description: The requesting user is not authenticated.
+        '403':
+          description: The requesting user lacks instructor access to the course.
+        '404':
+          description: The requested course does not exist.
+      tags:
+      - instructor
+    parameters:
+    - name: course_id
+      in: path
+      required: true
+      type: string
+  /instructor/v2/courses/{course_id}/change_due_date:
+    post:
+      operationId: instructor_v2_courses_change_due_date_create
+      description: Grants a due date extension to a learner for a particular unit.
+      parameters: []
+      responses:
+        '201':
+          description: ''
+      tags:
+      - instructor
+    parameters:
+    - name: course_id
+      in: path
+      required: true
+      type: string
+  /instructor/v2/courses/{course_id}/graded_subsections:
+    get:
+      operationId: instructor_v2_courses_graded_subsections_list
+      description: Retrieves a list of graded subsections (units with due dates) within
+        a specified course.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - instructor
+    parameters:
+    - name: course_id
+      in: path
+      required: true
+      type: string
+  /instructor/v2/courses/{course_id}/instructor_tasks:
+    get:
+      operationId: instructor_v2_courses_instructor_tasks_list
+      summary: List instructor tasks for a course.
+      description: List instructor tasks for a course.
+      parameters:
+      - name: course_id
+        in: path
+        description: Course key for the course.
+        type: string
+        required: true
+      - name: problem_location_str
+        in: query
+        description: 'Optional: Filter tasks to a specific problem location.'
+        type: string
+      - name: unique_student_identifier
+        in: query
+        description: 'Optional: Filter tasks to a specific student (requires problem_location_str).'
+        type: string
+      responses:
+        '200':
+          description: ''
+          schema:
+            $ref: '#/definitions/InstructorTaskList'
+        '400':
+          description: Invalid parameters provided.
+        '401':
+          description: The requesting user is not authenticated.
+        '403':
+          description: The requesting user lacks instructor access to the course.
+        '404':
+          description: The requested course does not exist.
+      tags:
+      - instructor
+    parameters:
+    - name: course_id
+      in: path
+      required: true
+      type: string
   /instructor_task/v1/schedules/{course_id}/bulk_email/:
     get:
       operationId: instructor_task_v1_schedules_bulk_email_list
@@ -6243,6 +6612,264 @@ paths:
       tags:
       - learner_home
     parameters: []
+  /learner_home/v1/programs/:
+    get:
+      operationId: learner_home_v1_programs_list
+      description: |-
+        For a learner, get list of enrolled programs with progress.
+        If an enterprise UUID ias provided, filter out all non-enterprise enrollments for the learner.
+
+        **Example Request**
+
+            GET /api/dashboard/v1/programs/{enterprise_uuid}/
+
+        **Parameters**
+
+        * `enterprise_uuid`: UUID of an enterprise customer.
+
+        **Example Response**
+
+            [
+                {
+                    "uuid": "ff41a5eb-2a73-4933-8e80-a1c66068ed2c",
+                    "title": "Demonstration Program",
+                    "type": "MicroMasters",
+                    "banner_image": {
+                        "large": {
+                            "url": "http://example.com/images/foo.large.jpg",
+                            "width": 1440,
+                            "height": 480
+                        },
+                        "medium": {
+                            "url": "http://example.com/images/foo.medium.jpg",
+                            "width": 726,
+                            "height": 242
+                        },
+                        "small": {
+                            "url": "http://example.com/images/foo.small.jpg",
+                            "width": 435,
+                            "height": 145
+                        },
+                        "x-small": {
+                            "url": "http://example.com/images/foo.x-small.jpg",
+                            "width": 348,
+                            "height": 116
+                        }
+                    },
+                    "authoring_organizations": [
+                        {
+                            "key": "example"
+                        }
+                    ],
+                    "progress": {
+                        "uuid": "ff41a5eb-2a73-4933-8e80-a1c66068ed2c",
+                        "completed": 0,
+                        "in_progress": 0,
+                        "not_started": 2
+                    }
+                }
+            ]
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - learner_home
+    parameters: []
+  /learner_home/v1/programs/{enterprise_uuid}/:
+    get:
+      operationId: learner_home_v1_programs_read
+      description: |-
+        For a learner, get list of enrolled programs with progress.
+        If an enterprise UUID ias provided, filter out all non-enterprise enrollments for the learner.
+
+        **Example Request**
+
+            GET /api/dashboard/v1/programs/{enterprise_uuid}/
+
+        **Parameters**
+
+        * `enterprise_uuid`: UUID of an enterprise customer.
+
+        **Example Response**
+
+            [
+                {
+                    "uuid": "ff41a5eb-2a73-4933-8e80-a1c66068ed2c",
+                    "title": "Demonstration Program",
+                    "type": "MicroMasters",
+                    "banner_image": {
+                        "large": {
+                            "url": "http://example.com/images/foo.large.jpg",
+                            "width": 1440,
+                            "height": 480
+                        },
+                        "medium": {
+                            "url": "http://example.com/images/foo.medium.jpg",
+                            "width": 726,
+                            "height": 242
+                        },
+                        "small": {
+                            "url": "http://example.com/images/foo.small.jpg",
+                            "width": 435,
+                            "height": 145
+                        },
+                        "x-small": {
+                            "url": "http://example.com/images/foo.x-small.jpg",
+                            "width": 348,
+                            "height": 116
+                        }
+                    },
+                    "authoring_organizations": [
+                        {
+                            "key": "example"
+                        }
+                    ],
+                    "progress": {
+                        "uuid": "ff41a5eb-2a73-4933-8e80-a1c66068ed2c",
+                        "completed": 0,
+                        "in_progress": 0,
+                        "not_started": 2
+                    }
+                }
+            ]
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - learner_home
+    parameters:
+    - name: enterprise_uuid
+      in: path
+      required: true
+      type: string
+  /learner_home/v1/programs/{program_uuid}/progress_details/:
+    get:
+      operationId: learner_home_v1_programs_progress_details_list
+      summary: Retrieves progress details of a learner in a specified program.
+      description: |-
+        **Example Request**
+
+            GET api/dashboard/v1/programs/{program_uuid}/progress_details/
+
+        **Parameters**
+
+        * `program_uuid`: A string representation of the uuid of the program.
+
+        **Response Values**
+
+        If the request for information about the program is successful, an HTTP 200 "OK" response
+        is returned.
+
+        The HTTP 200 response has the following values.
+
+        * `urls`: Urls to enroll/purchase a course or view program record.
+
+        * `program_data`: Holds meta information about the program.
+
+        * `course_data`: Learner's progress details for all courses in the program (in-progress/remaining/completed).
+
+        * `certificate_data`: Details about learner's certificates status for all courses in the program and the
+            program itself.
+
+        * `industry_pathways`: Industry pathways for the program, comes under additional credit opportunities.
+
+        * `credit_pathways`: Credit pathways for the program, comes under additional credit opportunities.
+
+        **Example Response**
+
+            {
+                "urls": {
+                    "program_listing_url": "/dashboard/programs/",
+                    "track_selection_url": "/course_modes/choose/",
+                    "commerce_api_url": "/api/commerce/v1/baskets/",
+                    "buy_button_url": "http://example.com/basket/add/?",
+                    "program_record_url": "https://example.com/records/programs/8675309"
+                },
+                "program_data": {
+                    "uuid": "a156a6e2-de91-4ce7-947a-888943e6b12a",
+                    "title": "Demonstration Program",
+                    "subtitle": "",
+                    "type": "MicroMasters",
+                    "status": "active",
+                    "marketing_slug": "demo-program",
+                    "marketing_url": "micromasters/demo-program",
+                    "authoring_organizations": [],
+                    "card_image_url": "http://example.com/asset-v1:DemoX+Demo_Course.jpg",
+                    "is_program_eligible_for_one_click_purchase": false,
+                    "pathway_ids": [
+                        1,
+                        2
+                    ],
+                    "is_learner_eligible_for_one_click_purchase": false,
+                    "skus": ["AUD90210"],
+                },
+                "course_data": {
+                    "uuid": "a156a6e2-de91-4ce7-947a-888943e6b12a",
+                    "completed": [],
+                    "in_progress": [],
+                    "not_started": [
+                        {
+                            "key": "example+DemoX",
+                            "uuid": "fe1a9ad4-a452-45cd-80e5-9babd3d43f96",
+                            "title": "Demonstration Course",
+                            "course_runs": [],
+                            "entitlements": [],
+                            "owners": [],
+                            "image": "",
+                            "short_description": "",
+                            "type": "457f07ec-a78f-45b4-ba09-5fb176520d8a",
+                        }
+                    ],
+                },
+                "certificate_data": [{
+                    "type": "course",
+                    "title": "Demo Course",
+                    'url': "/certificates/8675309",
+                }],
+                "industry_pathways": [
+                    {
+                        "id": 2,
+                        "uuid": "1b8fadf1-f6aa-4282-94e3-325b922a027f",
+                        "name": "Demo Industry Pathway",
+                        "org_name": "example",
+                        "email": "example@example.com",
+                        "description": "Sample demo industry pathway",
+                        "destination_url": "http://example.edu/online/pathways/example-methods",
+                        "pathway_type": "industry",
+                        "program_uuids": [
+                            "a156a6e2-de91-4ce7-947a-888943e6b12a"
+                        ]
+                    }
+                ],
+                "credit_pathways": [
+                    {
+                        "id": 1,
+                        "uuid": "86b9701a-61e6-48a2-92eb-70a824521c1f",
+                        "name": "Demo Credit Pathway",
+                        "org_name": "example",
+                        "email": "example@example.com",
+                        "description": "Sample demo credit pathway!",
+                        "destination_url": "http://example.edu/online/pathways/example-thinking",
+                        "pathway_type": "credit",
+                        "program_uuids": [
+                            "a156a6e2-de91-4ce7-947a-888943e6b12a"
+                        ]
+                    }
+                ]
+            }
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - learner_home
+    parameters:
+    - name: program_uuid
+      in: path
+      required: true
+      type: string
   /learning_sequences/v1/course_outline/{course_key_str}:
     get:
       operationId: learning_sequences_v1_course_outline_read
@@ -6513,6 +7140,16 @@ paths:
       operationId: mfe_config_v1_list
       summary: Return the MFE configuration, optionally including MFE-specific overrides.
       description: |-
+        This configuration currently also pulls specific settings from site configuration or
+        django settings. This is a temporary change as a part of the migration of some legacy
+        pages to MFEs. This is a temporary compatibility layer which will eventually be deprecated.
+
+        See [DEPR ticket](https://github.com/openedx/edx-platform/issues/37210) for more details.
+
+        The compatability means that settings from the legacy locations will continue to work but
+        the settings listed below in the `_get_legacy_config` function should be added to the MFE
+        config by operators.
+
         **Usage**
 
           Get common config:
@@ -6533,6 +7170,8 @@ paths:
             "LOGOUT_URL": "https://courses.example.com/logout",
             "STUDIO_BASE_URL": "https://studio.example.com",
             "LOGO_URL": "https://courses.example.com/logo.png",
+            "ENABLE_COURSE_SORTING_BY_START_DATE": True,
+            "HOMEPAGE_COURSE_MAX": 10,
             ... and so on
         }
         ```
@@ -6649,6 +7288,11 @@ paths:
                 course, chapter, sequential, vertical, html, problem, video, and
                 discussion.
             display_name: (str) The display name of the block.
+            course_progress: (dict) Contains information about how many assignments are in the course
+                and how many assignments the student has completed.
+                Included here:
+                    * total_assignments_count: (int) Total course's assignments count.
+                    * assignments_completed: (int) Assignments witch the student has completed.
 
         **Returns**
 
@@ -6693,6 +7337,26 @@ paths:
       - mobile
     parameters:
     - name: api_version
+      in: path
+      required: true
+      type: string
+  /mobile/{api_version}/course_info/{course_id}/enrollment_details:
+    get:
+      operationId: mobile_course_info_enrollment_details_list
+      summary: Handle the GET request
+      description: Returns user enrollment and course details.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - mobile
+    parameters:
+    - name: api_version
+      in: path
+      required: true
+      type: string
+    - name: course_id
       in: path
       required: true
       type: string
@@ -6799,6 +7463,59 @@ paths:
       in: path
       required: true
       type: string
+  /mobile/{api_version}/notifications/create-token/:
+    post:
+      operationId: mobile_notifications_create-token_create
+      summary: |-
+        **Use Case**
+            This endpoint allows clients to register a device for push notifications.
+      description: |-
+        If the device is already registered, the existing registration will be updated.
+            If setting PUSH_NOTIFICATIONS_SETTINGS is not configured, the endpoint will return a 501 error.
+
+        **Example Request**
+            POST /api/mobile/{version}/notifications/create-token/
+            **POST Parameters**
+              The body of the POST request can include the following parameters.
+              * name (optional) - A name of the device.
+              * registration_id (required) - The device token of the device.
+              * device_id (optional) - ANDROID_ID / TelephonyManager.getDeviceId() (always as hex)
+              * active (optional) - Whether the device is active, default is True.
+                If False, the device will not receive notifications.
+              * cloud_message_type (required) - You should choose FCM or GCM. Currently, only FCM is supported.
+              * application_id (optional) - Opaque application identity, should be filled in for multiple
+                key/certificate access. Should be equal settings.FCM_APP_NAME.
+        **Example Response**
+            ```json
+            {
+                "id": 1,
+                "name": "My Device",
+                "registration_id": "fj3j4",
+                "device_id": 1234,
+                "active": true,
+                "date_created": "2024-04-18T07:39:37.132787Z",
+                "cloud_message_type": "FCM",
+                "application_id": "my_app_id"
+            }
+            ```
+      parameters:
+      - name: data
+        in: body
+        required: true
+        schema:
+          $ref: '#/definitions/GCMDevice'
+      responses:
+        '201':
+          description: ''
+          schema:
+            $ref: '#/definitions/GCMDevice'
+      tags:
+      - mobile
+    parameters:
+    - name: api_version
+      in: path
+      required: true
+      type: string
   /mobile/{api_version}/users/{username}:
     get:
       operationId: mobile_users_read
@@ -6861,6 +7578,10 @@ paths:
             An additional attribute "expiration" has been added to the response, which lists the date
             when access to the course will expire or null if it doesn't expire.
 
+            In v4 we added to the response primary object. Primary object contains the latest user's enrollment
+            or course where user has the latest progress. Primary object has been cut from user's
+            enrolments array and inserted into separated section with key `primary`.
+
         **Example Request**
 
             GET /api/mobile/v1/users/{username}/course_enrollments/
@@ -6910,14 +7631,14 @@ paths:
             * mode: The type of certificate registration for this course (honor or
               certified).
             * url: URL to the downloadable version of the certificate, if exists.
+            * course_progress: Contains information about how many assignments are in the course
+              and how many assignments the student has completed.
+            * total_assignments_count: Total course's assignments count.
+            * assignments_completed: Assignments witch the student has completed.
       parameters: []
       responses:
         '200':
           description: ''
-          schema:
-            type: array
-            items:
-              $ref: '#/definitions/CourseEnrollment'
       tags:
       - mobile
     parameters:
@@ -6960,6 +7681,25 @@ paths:
       required: true
       type: string
     - name: course_id
+      in: path
+      required: true
+      type: string
+  /mobile/{api_version}/users/{username}/enrollments_status/:
+    get:
+      operationId: mobile_users_enrollments_status_list
+      description: Gets user's enrollments status.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - mobile
+    parameters:
+    - name: api_version
+      in: path
+      required: true
+      type: string
+    - name: username
       in: path
       required: true
       type: string
@@ -7031,78 +7771,6 @@ paths:
       tags:
       - notifications
     parameters: []
-  /notifications/channel/configurations/{course_key_string}:
-    patch:
-      operationId: notifications_channel_configurations_partial_update
-      description: Update an existing user notification preference for an entire channel
-        with the data in the request body.
-      parameters: []
-      responses:
-        '200':
-          description: ''
-      tags:
-      - notifications
-    parameters:
-    - name: course_key_string
-      in: path
-      required: true
-      type: string
-  /notifications/configurations/{course_key_string}:
-    get:
-      operationId: notifications_configurations_read
-      summary: Returns notification preference for user for a course.
-      description: |-
-        Parameters:
-             request (Request): The request object.
-             course_key_string (int): The ID of the course to retrieve notification preference.
-
-         Returns:
-             {
-                'id': 1,
-                'course_name': 'testcourse',
-                'course_id': 'course-v1:testorg+testcourse+testrun',
-                'notification_preference_config': {
-                    'discussion': {
-                        'enabled': False,
-                        'core': {
-                            'info': '',
-                            'web': False,
-                            'push': False,
-                            'email': False,
-                        },
-                        'notification_types': {
-                            'new_post': {
-                                'info': '',
-                                'web': False,
-                                'push': False,
-                                'email': False,
-                            },
-                        },
-                        'not_editable': {},
-                    },
-                }
-            }
-      parameters: []
-      responses:
-        '200':
-          description: ''
-      tags:
-      - notifications
-    patch:
-      operationId: notifications_configurations_partial_update
-      description: Update an existing user notification preference with the data in
-        the request body.
-      parameters: []
-      responses:
-        '200':
-          description: ''
-      tags:
-      - notifications
-    parameters:
-    - name: course_key_string
-      in: path
-      required: true
-      type: string
   /notifications/count/:
     get:
       operationId: notifications_count_list
@@ -7128,71 +7796,6 @@ paths:
       responses:
         '200':
           description: ''
-      tags:
-      - notifications
-    parameters: []
-  /notifications/enrollments/:
-    get:
-      operationId: notifications_enrollments_list
-      summary: API endpoint to get active CourseEnrollments for requester.
-      description: |-
-        **Permissions**: User must be authenticated.
-        **Response Format** (paginated):
-
-            {
-                "next": (str) url_to_next_page_of_courses,
-                "previous": (str) url_to_previous_page_of_courses,
-                "count": (int) total_number_of_courses,
-                "num_pages": (int) total_number_of_pages,
-                "current_page": (int) current_page_number,
-                "start": (int) index_of_first_course_on_page,
-                "results" : [
-                    {
-                        "course": {
-                            "id": (int) course_id,
-                            "display_name": (str) course_display_name
-                        },
-                    },
-                    ...
-                ],
-            }
-
-        Response Error Codes:
-        - 403: The requester cannot access resource.
-      parameters:
-      - name: page
-        in: query
-        description: A page number within the paginated result set.
-        required: false
-        type: integer
-      - name: page_size
-        in: query
-        description: Number of results to return per page.
-        required: false
-        type: integer
-      responses:
-        '200':
-          description: ''
-          schema:
-            required:
-            - count
-            - results
-            type: object
-            properties:
-              count:
-                type: integer
-              next:
-                type: string
-                format: uri
-                x-nullable: true
-              previous:
-                type: string
-                format: uri
-                x-nullable: true
-              results:
-                type: array
-                items:
-                  $ref: '#/definitions/NotificationCourseEnrollment'
       tags:
       - notifications
     parameters: []
@@ -7222,12 +7825,101 @@ paths:
       in: path
       required: true
       type: string
+  /notifications/preferences/update/{username}/:
+    get:
+      operationId: notifications_preferences_update_read
+      description: |-
+        View to update user preferences from encrypted username and patch.
+        username and patch must be string
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - notifications
+    post:
+      operationId: notifications_preferences_update_create
+      description: |-
+        View to update user preferences from encrypted username and patch.
+        username and patch must be string
+      parameters: []
+      responses:
+        '201':
+          description: ''
+      tags:
+      - notifications
+    parameters:
+    - name: username
+      in: path
+      required: true
+      type: string
+  /notifications/preferences/update/{username}/{patch}/:
+    get:
+      operationId: notifications_preferences_update_read
+      description: |-
+        View to update user preferences from encrypted username and patch.
+        username and patch must be string
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - notifications
+    post:
+      operationId: notifications_preferences_update_create
+      description: |-
+        View to update user preferences from encrypted username and patch.
+        username and patch must be string
+      parameters: []
+      responses:
+        '201':
+          description: ''
+      tags:
+      - notifications
+    parameters:
+    - name: username
+      in: path
+      required: true
+      type: string
+    - name: patch
+      in: path
+      required: true
+      type: string
   /notifications/read/:
     patch:
       operationId: notifications_read_partial_update
       description: |-
         Marks all notifications or single notification read for the given
         app name or notification id for the authenticated user.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - notifications
+    parameters: []
+  /notifications/v2/configurations/:
+    get:
+      operationId: notifications_v2_configurations_list
+      summary: Handles GET requests to retrieve notification preferences.
+      description: |-
+        This method fetches the user's active notification preferences and
+        merges them with a default structure provided by NotificationAppManager.
+        This provides a complete view of all possible notifications and the
+        user's current settings for them.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - notifications
+    put:
+      operationId: notifications_v2_configurations_update
+      summary: Handles PUT requests to update notification preferences.
+      description: |-
+        This method updates the user's notification preferences based on the
+        provided data in the request body. It expects a dictionary with
+        notification types and their settings.
       parameters: []
       responses:
         '200':
@@ -8074,6 +8766,168 @@ paths:
       tags:
       - send_account_activation_email
     parameters: []
+  /support/v1/manage_course_team/:
+    get:
+      operationId: support_v1_manage_course_team_list
+      summary: Retrieve a list of courses accessible by the authenticated user
+      description: |-
+        **Use Case**
+
+            GET API to retrieve a list of courses accessible by the authenticated user,
+            along with the specified user's role ("instructor", "staff", or null) in each course.
+
+        **Endpoint**
+
+            GET /api/support/v1/manage_course_team/
+
+        **Query Parameters**
+
+            At least one of the following parameters is required:
+            - email: User's email address
+            - username: User's username
+            - user_id: User's ID
+
+        **Returns**
+
+            List of courses accessible to the authenticated user, each annotated with the
+            specified user's role in that course. Each course includes organizational
+            information and identifiers.
+
+        **Example Response**
+
+        ```json
+            {
+                "results": [
+                    {
+                        "course_id": "course-v1:edX+DemoX+2025_T1",
+                        "course_name": "edX Demonstration Course",
+                        "course_url": "https://studio.example.com/course/course-v1:edX+DemoX+2025_T1",
+                        "role": "instructor",
+                        "status": "active",
+                        "org": "edX",
+                        "run": "2025_T1",
+                        "number": "DemoX"
+                    },
+                    {
+                        "course_id": "course-v1:MITx+6.00x+2024_Fall",
+                        "course_name": "Introduction to Computer Science",
+                        "course_url": "https://studio.example.com/course/course-v1:MITx+6.00x+2024_Fall",
+                        "role": "staff",
+                        "status": "archived",
+                        "org": "MITx",
+                        "run": "2024_Fall",
+                        "number": "6.00x"
+                    }
+                ]
+            }
+        ```
+      parameters:
+      - name: email
+        in: query
+        description: User's email address
+        type: string
+      - name: username
+        in: query
+        description: User's username
+        type: string
+      - name: user_id
+        in: query
+        description: User's ID
+        type: integer
+      responses:
+        '200':
+          description: ''
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/CourseTeamManage'
+      tags:
+      - support
+    put:
+      operationId: support_v1_manage_course_team_update
+      summary: Bulk assign or revoke course team roles for a user across multiple
+        courses.
+      description: |-
+        **Endpoint**
+
+            PUT /api/support/v1/manage_course_team/
+
+        **Permissions**
+
+            - Admin/Staff users: Can manage roles for any course
+            - Instructor users: Can only manage roles for courses/orgs they have instructor access to
+            - Other users: Access denied
+
+        **Request Data**
+
+            A JSON object containing:
+                - email: User's email address
+                - bulk_role_operations: List of role operations, each containing:
+                    - course_id: Course key string
+                    - role: Role to assign or revoke ("instructor" or "staff")
+                    - action: "assign" or "revoke"
+
+        **Example Request**
+
+        ```json
+        {
+            "email": "user1@example.com",
+            "bulk_role_operations": [
+                {
+                    "course_id": "course-v1:edX+DemoX+2025_T1",
+                    "role": "instructor",
+                    "action": "assign"
+                },
+                {
+                    "course_id": "course-v1:edX+DemoX+2025_T2",
+                    "role": "staff",
+                    "action": "revoke"
+                }
+            ]
+        }
+        ```
+
+        **Returns**
+
+            - HTTP 200 with results for each operation (success or error details)
+            - HTTP 400 if the request data is invalid
+
+        **Example Response**
+
+        ```json
+        {
+            "email": "user1@example.com",
+            "results": [
+                {
+                    "course_id": "course-v1:edX+DemoX+2025_T1",
+                    "role": "instructor",
+                    "action": "assign",
+                    "status": "success"
+                },
+                {
+                    "course_id": "course-v1:edX+DemoX+2025_T2",
+                    "role": "staff",
+                    "action": "revoke",
+                    "status": "failed",
+                    "error": "error_message"
+                }
+            ]
+        }
+        ```
+      parameters:
+      - name: data
+        in: body
+        required: true
+        schema:
+          $ref: '#/definitions/CourseTeamManage'
+      responses:
+        '200':
+          description: ''
+          schema:
+            $ref: '#/definitions/CourseTeamManage'
+      tags:
+      - support
+    parameters: []
   /team/v0/bulk_team_membership/{course_id}:
     get:
       operationId: team_v0_bulk_team_membership_read
@@ -8339,6 +9193,9 @@ paths:
 
               GET /api/third_party_auth/v0/providers/{provider_id}/users?username={username1},{username2}
 
+              GET /api/third_party_auth/v0/providers/{provider_id}/users?username={username1}&
+                remote_id_field_name={external_id_field_name}
+
               GET /api/third_party_auth/v0/providers/{provider_id}/users?username={username1}&usernames={username2}
 
               GET /api/third_party_auth/v0/providers/{provider_id}/users?remote_id={remote_id1},{remote_id2}
@@ -8361,6 +9218,9 @@ paths:
 
             * usernames: Optional. List of comma separated edX usernames to filter the result set.
               e.g. ?usernames=bob123,jane456
+
+            * remote_id_field_name: Optional. The field name to use for the remote id lookup.
+              Useful when learners are coming from external LMS. e.g. ?remote_id_field_name=ext_userid_sf
 
             * page, page_size: Optional. Used for paging the result set, especially when getting
               an unfiltered list.
@@ -8400,26 +9260,6 @@ paths:
       responses:
         '200':
           description: ''
-          schema:
-            required:
-            - count
-            - results
-            type: object
-            properties:
-              count:
-                type: integer
-              next:
-                type: string
-                format: uri
-                x-nullable: true
-              previous:
-                type: string
-                format: uri
-                x-nullable: true
-              results:
-                type: array
-                items:
-                  $ref: '#/definitions/UserMapping'
       tags:
       - third_party_auth
     parameters:
@@ -8435,6 +9275,15 @@ paths:
       parameters: []
       responses:
         '200':
+          description: ''
+      tags:
+      - third_party_auth
+    delete:
+      operationId: third_party_auth_v0_users_delete
+      description: Delete given social auth record for a user.
+      parameters: []
+      responses:
+        '204':
           description: ''
       tags:
       - third_party_auth
@@ -8534,10 +9383,23 @@ paths:
   /user/v1/accounts:
     get:
       operationId: user_v1_accounts_list
+      summary: Return a list of user details objects
       description: |-
-        GET /api/user/v1/accounts?username={username1,username2}
-        GET /api/user/v1/accounts?email={user_email} (Staff Only)
-        GET /api/user/v1/accounts?lms_user_id={lms_user_id} (Staff Only)
+        **Example Requests**
+
+            GET /api/user/v1/accounts?usernames={username1,username2}[?view=shared]
+
+            GET /api/user/v1/accounts?email={user_email} (staff only)
+
+            GET /api/user/v1/accounts?lms_user_id={user_email} (staff only)
+
+        **Responses**
+
+        If no user exists with the specified username, or email, an HTTP 404 "Not Found" response is returned.
+
+        If the user makes the request for her own account, or makes a request for another account and has "is_staff" access, an HTTP 200 "OK" response is returned.
+
+        The response consists of a list of one or more  user objects, in the same format as is returned for `GET /user/v1/accounts/{username}`.
       parameters: []
       responses:
         '200':
@@ -8799,12 +9661,34 @@ paths:
   /user/v1/accounts/search_emails:
     post:
       operationId: user_v1_accounts_search_emails
+      summary: Return information about users associated with a list of email addresses
       description: |-
+        **Example Requests**
+
         POST /api/user/v1/accounts/search_emails
-        Content Type: "application/json"
-        {
-            "emails": ["edx@example.com", "staff@example.com"]
-        }
+
+            {
+                "emails": ["edx@example.com", "staff@example.com"]
+            }
+
+        **Response**
+
+        If no `emails` key is present in the request, or the user does not have "is_staff" access, an HTTP 404 "Not Found" response is returned.
+
+        If the has "is_staff" access, an HTTP 200 "OK" response is returned. The response contains the following values.
+
+            [
+                {
+                    "username": "edx",
+                    "email": "edx@example.com",
+                    "id": 3,
+                },
+                {
+                    "username": "staff",
+                    "email": "staff@example.com",
+                    "id": 8,
+                }
+            ]
       parameters: []
       responses:
         '201':
@@ -8840,26 +9724,72 @@ paths:
       tags:
       - user
     parameters: []
-  /user/v1/accounts/verifications/{attempt_id}/:
-    get:
-      operationId: user_v1_accounts_verifications_read
-      description: Get IDV attempt details by attempt_id. Only accessible by global
-        staff.
-      parameters: []
-      responses:
-        '200':
-          description: ''
-      tags:
-      - user
-    parameters:
-    - name: attempt_id
-      in: path
-      required: true
-      type: string
   /user/v1/accounts/{username}:
     get:
       operationId: user_v1_accounts_read
-      description: GET /api/user/v1/accounts/{username}/
+      summary: Retrieve a single detailed user object
+      description: |-
+        **Example Requests**
+
+            GET /api/user/v1/accounts/{username}/
+
+        **Response**
+
+        If no user exists with the specified username, or email, an HTTP 404 "Not Found" response is returned.
+
+        If the user makes the request for her own account, or makes a request for another account and has "is_staff" access, an HTTP 200 "OK" response is returned. The response contains the following values.
+
+        * `id`: numerical lms user id in db
+        * `activation_key`: auto-genrated activation key when signed up via email
+        * `bio`: null or textual representation of user biographical information ("about me").
+        * `country`: An ISO 3166 country code or null.
+        * `date_joined`: The date the account was created, in the string format provided by datetime. For example, "2014-08-26T17:52:11Z".
+        * `last_login`: The latest date the user logged in, in the string datetime format.
+        * `email`: Email address for the user. New email addresses must be confirmed via a confirmation email, so GET does not reflect the change until the address has been confirmed.
+        * `secondary_email`: A secondary email address for the user. Unlike the email field, GET will reflect the latest update to this field even if changes have yet to be confirmed.
+        * `verified_name`: Approved verified name of the learner present in name affirmation plugin
+        * `extended_profile`: A list of objects with the keys `field_name` and `field_value`, returning any populated `extended_profile_fields` configured in the **Site Configuration**
+        * `gender`: One of the following values:
+            * null
+            * "f"
+            * "m"
+            * "o"
+        * `goals`: The textual representation of the user's goals, or null.
+        * `is_active`: Boolean representation of whether a user is active.
+        * `language`: The user's preferred language, or null.
+        * `language_proficiencies`: Array of language preferences. Each preference is a JSON object with the following keys:
+            * "code": string ISO 639-1 language code e.g. "en".
+        * `level_of_education`: One of the following values:
+            * "p": PhD or Doctorate
+            * "m": Master's or professional degree
+            * "b": Bachelor's degree
+            * "a": Associate's degree
+            * "hs": Secondary/high school
+            * "jhs": Junior secondary/junior high/middle school
+            * "el": Elementary/primary school
+            * "none": None
+            * "o": Other
+            * null: The user did not enter a value
+        * `mailing_address`: The textual representation of the user's mailing address, or null.
+        * `name`: The full name of the user.
+        * `profile_image`: A JSON representation of a user's profile image information. This representation has the following keys.
+            * "has_image": Boolean indicating whether the user has a profile image.
+            * "image_url_*": Absolute URL to various sizes of a user's profile image, where '*' matches a representation of the corresponding image size, such as 'small', 'medium', 'large', and 'full'. These are configurable via PROFILE_IMAGE_SIZES_MAP.
+        * `requires_parental_consent`: True if the user is a minor requiring parental consent.
+        * `social_links`: Array of social links, sorted alphabetically by "platform". Each preference is a JSON object with the following keys:
+            * "platform": A particular social platform, ex: 'facebook'
+            * "social_link": The link to the user's profile on the particular platform
+        * `username`: The username associated with the account.
+        * `year_of_birth`: The year the user was born, as an integer, or null.
+        * `account_privacy`: The user's setting for sharing her personal profile. Possible values are "all_users", "private", or "custom".  If "custom", the user has selectively chosen a subset of shareable fields to make visible to others via the User Preferences API.
+        * `phone_number`: The phone number for the user. String of numbers with an optional `+` sign at the start.
+        * `pending_name_change`: If the user has an active name change request, returns the requested name.
+
+        For all text fields, plain text instead of HTML is supported. The data is stored exactly as specified. Clients must HTML escape rendered values to avoid script injections.
+
+        If a user who does not have "is_staff" access requests account information for a different user, only a subset of these fields is returned. The returned fields depend on the `ACCOUNT_VISIBILITY_CONFIGURATION` configuration setting and the visibility preference of the user for whom data is requested.
+
+        A user can view which account fields they have shared with other users by requesting their own username and providing the "view=shared" URL parameter.
       parameters: []
       responses:
         '200':
@@ -8871,9 +9801,43 @@ paths:
       - user
     patch:
       operationId: user_v1_accounts_partial_update
-      summary: PATCH /api/user/v1/accounts/{username}/
-      description: Note that this implementation is the "merge patch" implementation
-        proposed in
+      summary: Update user account or profile information
+      description: |-
+        **Example Requests**
+
+
+            Content-Type: application/merge-patch+json
+
+            PATCH /api/user/v1/accounts/{username}
+
+        **Request Body
+
+            {
+              "level_of_education": "m",
+              "extended_profile":
+                [
+                    {"field_name": "favorite_beatle", "field_value": {"name": "ringo"}},
+                    {"field_name": "conlangs_spoken", "field_value":["Láadan", "Rikchik", "Lojban"]}
+                ]
+            }
+
+        **Notes regarding `social_links`**
+
+        Requested updates to social_links are automatically merged with previously set links. That is, any newly introduced platforms are add to the previous list. Updated links to pre-existing platforms replace their values in the previous list. Pre-existing platforms can be removed by setting the value of the social_link to an empty string ("").
+
+        **Response Values for PATCH**
+
+        Users can only modify their own account information. If the requesting user does not have the specified username and has staff access, the request returns an HTTP 403 "Forbidden" response. If the requesting user does not have staff access, the request returns an HTTP 404 "Not Found" response to avoid revealing the existence of the account.
+
+        If no user exists with the specified username, an HTTP 404 "Not Found" response is returned.
+
+        If "application/merge-patch+json" is not the specified content type, a 415 "Unsupported Media Type" response is returned.
+
+        If validation errors prevent the update, this method returns a 400 "Bad Request" response that includes a "field_errors" field that lists all error messages. This will happen if an attempt is made to edit any read-only fields.
+
+        If a failure at the time of the update prevents the update, a 400 "Bad Request" error is returned. The JSON collection contains specific errors.
+
+        If the update is successful, updated user account data is returned.
       parameters: []
       responses:
         '200':
@@ -9035,10 +9999,21 @@ paths:
   /user/v1/me:
     get:
       operationId: user_v1_get
-      description: GET /api/user/v1/me
+      summary: Return an authenticated user's username
+      description: |-
+        **Example Requests**
+
+            GET /api/user/v1/me[?view=shared]
       parameters: []
       responses:
         '200':
+          description: ''
+          schema:
+            type: object
+            properties:
+              username:
+                type: string
+        '401':
           description: ''
       consumes:
       - application/json
@@ -9207,21 +10182,6 @@ paths:
       in: path
       required: true
       type: string
-  /user/v1/skill_level/{job_id}/:
-    get:
-      operationId: user_v1_skill_level_read
-      description: GET /api/user/v1/skill_level/{job_id}/
-      parameters: []
-      responses:
-        '200':
-          description: ''
-      tags:
-      - user
-    parameters:
-    - name: job_id
-      in: path
-      required: true
-      type: string
   /user/v1/user_prefs/:
     get:
       operationId: user_v1_user_prefs_list
@@ -9229,12 +10189,12 @@ paths:
       parameters:
       - name: key
         in: query
-        description: key
+        description: ''
         required: false
         type: string
       - name: user
         in: query
-        description: user
+        description: ''
         required: false
         type: string
       - name: page
@@ -9414,22 +10374,57 @@ paths:
       - user
     post:
       operationId: user_account_login_session_create
-      summary: Log in a user.
-      description: |-
-        See `login_user` for details.
-
-        Example Usage:
-
-            POST /api/user/v1/login_session
-            with POST params `email`, `password`.
-
-            200 {'success': true}
-      parameters: []
+      summary: POST /user/{api_version}/account/login_session/
+      description: Returns 200 on success, and a detailed error message otherwise.
+      parameters:
+      - name: data
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            email:
+              type: string
+            password:
+              type: string
       responses:
-        '201':
+        '200':
           description: ''
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+              value:
+                type: string
+              error_code:
+                type: string
+        '400':
+          description: ''
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+              value:
+                type: string
+              error_code:
+                type: string
+        '403':
+          description: ''
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+              value:
+                type: string
+              error_code:
+                type: string
       tags:
       - user
+      security:
+      - csrf: []
     parameters:
     - name: api_version
       in: path
@@ -9694,6 +10689,36 @@ paths:
       tags:
       - val
     parameters: []
+  /val/v0/videos/video-transcripts/:
+    post:
+      operationId: val_v0_videos_video-transcripts_create
+      description: Creates a video transcript instance with the given information.
+      parameters: []
+      responses:
+        '201':
+          description: ''
+      tags:
+      - val
+    patch:
+      operationId: val_v0_videos_video-transcripts_partial_update
+      description: Partially update a video transcript, only supporting updating the
+        `provider` field.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - val
+    delete:
+      operationId: val_v0_videos_video-transcripts_delete
+      description: Delete a video transcript instance with the given information.
+      parameters: []
+      responses:
+        '204':
+          description: ''
+      tags:
+      - val
+    parameters: []
   /val/v0/videos/video-transcripts/create/:
     post:
       operationId: val_v0_videos_video-transcripts_create_create
@@ -9701,6 +10726,25 @@ paths:
       parameters: []
       responses:
         '201':
+          description: ''
+      tags:
+      - val
+    patch:
+      operationId: val_v0_videos_video-transcripts_create_partial_update
+      description: Partially update a video transcript, only supporting updating the
+        `provider` field.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - val
+    delete:
+      operationId: val_v0_videos_video-transcripts_create_delete
+      description: Delete a video transcript instance with the given information.
+      parameters: []
+      responses:
+        '204':
           description: ''
       tags:
       - val
@@ -9764,7 +10808,7 @@ paths:
       required: true
       type: string
       pattern: ^[a-zA-Z0-9\-_]*$
-  /xblock/v2/xblocks/{usage_key_str}/:
+  /xblock/v2/xblocks/{usage_key}/:
     get:
       operationId: xblock_v2_xblocks_read
       summary: Get metadata about the specified block.
@@ -9780,11 +10824,11 @@ paths:
       tags:
       - xblock
     parameters:
-    - name: usage_key_str
+    - name: usage_key
       in: path
       required: true
       type: string
-  /xblock/v2/xblocks/{usage_key_str}/fields/:
+  /xblock/v2/xblocks/{usage_key}/fields/:
     get:
       operationId: xblock_v2_xblocks_fields_list
       description: retrieves the xblock, returning display_name, data, and metadata
@@ -9805,11 +10849,11 @@ paths:
       tags:
       - xblock
     parameters:
-    - name: usage_key_str
+    - name: usage_key
       in: path
       required: true
       type: string
-  /xblock/v2/xblocks/{usage_key_str}/handler_url/{handler_name}/:
+  /xblock/v2/xblocks/{usage_key}/handler_url/{handler_name}/:
     get:
       operationId: xblock_v2_xblocks_handler_url_read
       summary: |-
@@ -9824,7 +10868,7 @@ paths:
       tags:
       - xblock
     parameters:
-    - name: usage_key_str
+    - name: usage_key
       in: path
       required: true
       type: string
@@ -9832,7 +10876,22 @@ paths:
       in: path
       required: true
       type: string
-  /xblock/v2/xblocks/{usage_key_str}/view/{view_name}/:
+  /xblock/v2/xblocks/{usage_key}/olx/:
+    get:
+      operationId: xblock_v2_xblocks_olx_list
+      description: Get the OLX (XML serialization) of the specified XBlock
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - xblock
+    parameters:
+    - name: usage_key
+      in: path
+      required: true
+      type: string
+  /xblock/v2/xblocks/{usage_key}/view/{view_name}/:
     get:
       operationId: xblock_v2_xblocks_view_read
       description: Get the HTML, JS, and CSS needed to render the given XBlock.
@@ -9843,7 +10902,129 @@ paths:
       tags:
       - xblock
     parameters:
-    - name: usage_key_str
+    - name: usage_key
+      in: path
+      required: true
+      type: string
+    - name: view_name
+      in: path
+      required: true
+      type: string
+  /xblock/v2/xblocks/{usage_key}@{version}/:
+    get:
+      operationId: xblock_v2_xblocks_read
+      summary: Get metadata about the specified block.
+      description: |-
+        Accepts the following query parameters:
+
+        * "include": a comma-separated list of keys to include.
+          Valid keys are "index_dictionary" and "student_view_data".
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - xblock
+    parameters:
+    - name: usage_key
+      in: path
+      required: true
+      type: string
+    - name: version
+      in: path
+      required: true
+      type: string
+  /xblock/v2/xblocks/{usage_key}@{version}/fields/:
+    get:
+      operationId: xblock_v2_xblocks_fields_list
+      description: retrieves the xblock, returning display_name, data, and metadata
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - xblock
+    post:
+      operationId: xblock_v2_xblocks_fields_create
+      description: edits the xblock, saving changes to data and metadata only (display_name
+        included in metadata)
+      parameters: []
+      responses:
+        '201':
+          description: ''
+      tags:
+      - xblock
+    parameters:
+    - name: usage_key
+      in: path
+      required: true
+      type: string
+    - name: version
+      in: path
+      required: true
+      type: string
+  /xblock/v2/xblocks/{usage_key}@{version}/handler_url/{handler_name}/:
+    get:
+      operationId: xblock_v2_xblocks_handler_url_read
+      summary: |-
+        Get an absolute URL which can be used (without any authentication) to call
+        the given XBlock handler.
+      description: The URL will expire but is guaranteed to be valid for a minimum
+        of 2 days.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - xblock
+    parameters:
+    - name: usage_key
+      in: path
+      required: true
+      type: string
+    - name: version
+      in: path
+      required: true
+      type: string
+    - name: handler_name
+      in: path
+      required: true
+      type: string
+  /xblock/v2/xblocks/{usage_key}@{version}/olx/:
+    get:
+      operationId: xblock_v2_xblocks_olx_list
+      description: Get the OLX (XML serialization) of the specified XBlock
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - xblock
+    parameters:
+    - name: usage_key
+      in: path
+      required: true
+      type: string
+    - name: version
+      in: path
+      required: true
+      type: string
+  /xblock/v2/xblocks/{usage_key}@{version}/view/{view_name}/:
+    get:
+      operationId: xblock_v2_xblocks_view_read
+      description: Get the HTML, JS, and CSS needed to render the given XBlock.
+      parameters: []
+      responses:
+        '200':
+          description: ''
+      tags:
+      - xblock
+    parameters:
+    - name: usage_key
+      in: path
+      required: true
+      type: string
+    - name: version
       in: path
       required: true
       type: string
@@ -9852,6 +11033,172 @@ paths:
       required: true
       type: string
 definitions:
+  Cohort:
+    description: A cohort representation
+    type: object
+    properties:
+      id:
+        title: ID
+        description: The integer identifier for a cohort.
+        type: integer
+      name:
+        title: Name
+        description: The string identifier for a cohort.
+        type: string
+      user_count:
+        title: User Count
+        description: The number of students in the cohort.
+        type: integer
+      assignment_type:
+        title: Assignment Type
+        description: The assignment type ("manual" or "random").
+        type: string
+        enum:
+        - manual
+        - random
+      user_partition_id:
+        title: User Partition ID
+        description: The integer identifier of the UserPartition (content group configuration).
+        type: integer
+        x-nullable: true
+      group_id:
+        title: Group ID
+        description: The integer identifier of the specific group in the partition.
+        type: integer
+        x-nullable: true
+  CohortCreate:
+    description: Request body for creating a new cohort
+    required:
+    - name
+    - assignment_type
+    type: object
+    properties:
+      name:
+        title: Name
+        description: The string identifier for a cohort.
+        type: string
+        minLength: 1
+      assignment_type:
+        title: Assignment Type
+        description: The assignment type ("manual" or "random").
+        type: string
+        enum:
+        - manual
+        - random
+      user_partition_id:
+        title: User Partition ID
+        description: The integer identifier of the UserPartition (content group configuration). Required if group_id is specified.
+        type: integer
+      group_id:
+        title: Group ID
+        description: The integer identifier of the specific group in the partition.
+        type: integer
+  CohortUpdate:
+    description: Request body for updating a cohort. At least one of name, assignment_type, or group_id must be provided.
+    type: object
+    properties:
+      name:
+        title: Name
+        description: The string identifier for a cohort.
+        type: string
+        minLength: 1
+      assignment_type:
+        title: Assignment Type
+        description: The assignment type ("manual" or "random").
+        type: string
+        enum:
+        - manual
+        - random
+      user_partition_id:
+        title: User Partition ID
+        description: The integer identifier of the UserPartition (content group configuration). Required if group_id is specified (non-null).
+        type: integer
+      group_id:
+        title: Group ID
+        description: The integer identifier of the specific group in the partition. Set to null to remove the content group association.
+        type: integer
+        x-nullable: true
+  PermissionValidation:
+    description: The permissions to validate
+    required:
+    - action
+    - scope
+    type: object
+    properties:
+      action:
+        title: Action
+        type: string
+        maxLength: 255
+        minLength: 1
+      scope:
+        title: Scope
+        type: string
+        maxLength: 255
+        minLength: 1
+  PermissionValidationResponse:
+    required:
+    - action
+    - scope
+    - allowed
+    type: object
+    properties:
+      action:
+        title: Action
+        type: string
+        maxLength: 255
+        minLength: 1
+      scope:
+        title: Scope
+        type: string
+        maxLength: 255
+        minLength: 1
+      allowed:
+        title: Allowed
+        type: boolean
+  ListRolesWithScopeResponse:
+    required:
+    - role
+    - permissions
+    - user_count
+    type: object
+    properties:
+      role:
+        title: Role
+        type: string
+        maxLength: 255
+        minLength: 1
+      permissions:
+        type: array
+        items:
+          type: string
+          maxLength: 255
+          minLength: 1
+      user_count:
+        title: User count
+        type: integer
+  AddUsersToRoleWithScope:
+    required:
+    - role
+    - scope
+    - users
+    type: object
+    properties:
+      role:
+        title: Role
+        type: string
+        maxLength: 255
+        minLength: 1
+      scope:
+        title: Scope
+        type: string
+        maxLength: 255
+        minLength: 1
+      users:
+        type: array
+        items:
+          type: string
+          maxLength: 255
+          minLength: 1
   CCXCourse:
     required:
     - master_course_id
@@ -10038,6 +11385,7 @@ definitions:
     required:
     - celebrations
     - course_access
+    - studio_access
     - course_id
     - is_enrolled
     - is_self_paced
@@ -10053,12 +11401,9 @@ definitions:
     - can_view_certificate
     - course_modes
     - is_new_discussion_sidebar_view_enabled
+    - has_course_author_access
     type: object
     properties:
-      can_show_upgrade_sock:
-        title: Can show upgrade sock
-        type: string
-        readOnly: true
       verified_mode:
         title: Verified mode
         type: string
@@ -10075,6 +11420,9 @@ definitions:
         additionalProperties:
           type: string
           x-nullable: true
+      studio_access:
+        title: Studio access
+        type: boolean
       course_id:
         title: Course id
         type: string
@@ -10128,6 +11476,9 @@ definitions:
           $ref: '#/definitions/CourseModeSerrializer'
       is_new_discussion_sidebar_view_enabled:
         title: Is new discussion sidebar view enabled
+        type: boolean
+      has_course_author_access:
+        title: Has course author access
         type: boolean
   DateSummary:
     required:
@@ -10343,10 +11694,6 @@ definitions:
         title: Dates banner info
         type: string
         readOnly: true
-      can_show_upgrade_sock:
-        title: Can show upgrade sock
-        type: string
-        readOnly: true
       verified_mode:
         title: Verified mode
         type: string
@@ -10432,10 +11779,15 @@ definitions:
         additionalProperties:
           type: string
           x-nullable: true
+      assignment_colors:
+        title: Assignment colors
+        type: string
+        readOnly: true
   SubsectionScores:
     required:
     - assignment_type
     - display_name
+    - due
     - has_graded_assignment
     - num_points_earned
     - num_points_possible
@@ -10455,6 +11807,11 @@ definitions:
         title: Display name
         type: string
         minLength: 1
+      due:
+        title: Due
+        type: string
+        format: date-time
+        x-nullable: true
       has_graded_assignment:
         title: Has graded assignment
         type: boolean
@@ -10525,6 +11882,46 @@ definitions:
         title: Status date
         type: string
         format: date-time
+  AssignmentTypeScores:
+    required:
+    - type
+    - weight
+    - average_grade
+    - weighted_grade
+    - last_grade_publish_date
+    - has_hidden_contribution
+    - short_label
+    - num_droppable
+    type: object
+    properties:
+      type:
+        title: Type
+        type: string
+        minLength: 1
+      weight:
+        title: Weight
+        type: number
+      average_grade:
+        title: Average grade
+        type: number
+      weighted_grade:
+        title: Weighted grade
+        type: number
+      last_grade_publish_date:
+        title: Last grade publish date
+        type: string
+        format: date-time
+      has_hidden_contribution:
+        title: Has hidden contribution
+        type: string
+        minLength: 1
+      short_label:
+        title: Short label
+        type: string
+        minLength: 1
+      num_droppable:
+        title: Num droppable
+        type: integer
   ProgressTab:
     required:
     - access_expiration
@@ -10542,12 +11939,10 @@ definitions:
     - user_has_passing_grade
     - verification_data
     - disable_progress_graph
+    - assignment_type_grade_summary
+    - final_grades
     type: object
     properties:
-      can_show_upgrade_sock:
-        title: Can show upgrade sock
-        type: string
-        readOnly: true
       verified_mode:
         title: Verified mode
         type: string
@@ -10607,6 +12002,13 @@ definitions:
       disable_progress_graph:
         title: Disable progress graph
         type: boolean
+      assignment_type_grade_summary:
+        type: array
+        items:
+          $ref: '#/definitions/AssignmentTypeScores'
+      final_grades:
+        title: Final grades
+        type: number
   Lti:
     required:
     - lti_config
@@ -11189,111 +12591,13 @@ definitions:
       thread_counts:
         title: Thread counts
         description: Mapping of thread counts by type of thread
-        type: string
+        type: object
         readOnly: true
       enabled_in_context:
         title: Enabled in context
         description: Whether this topic is enabled in its context
         type: boolean
         readOnly: true
-  VerifiedName:
-    required:
-    - username
-    - verified_name
-    - profile_name
-    type: object
-    properties:
-      id:
-        title: ID
-        type: integer
-        readOnly: true
-      created:
-        title: Created
-        type: string
-        format: date-time
-        readOnly: true
-      username:
-        title: Username
-        type: string
-        minLength: 1
-      verified_name:
-        title: Verified name
-        type: string
-        minLength: 1
-      profile_name:
-        title: Profile name
-        type: string
-        minLength: 1
-      verification_attempt_id:
-        title: Verification attempt id
-        type: integer
-        x-nullable: true
-      proctored_exam_attempt_id:
-        title: Proctored exam attempt id
-        type: integer
-        x-nullable: true
-      status:
-        title: Status
-        type: string
-        minLength: 1
-        x-nullable: true
-  UpdateVerifiedName:
-    required:
-    - username
-    - status
-    type: object
-    properties:
-      id:
-        title: ID
-        type: integer
-        readOnly: true
-      created:
-        title: Created
-        type: string
-        format: date-time
-        readOnly: true
-      username:
-        title: Username
-        type: string
-        minLength: 1
-      verified_name:
-        title: Verified name
-        type: string
-        minLength: 1
-      profile_name:
-        title: Profile name
-        type: string
-        minLength: 1
-      verification_attempt_id:
-        title: Verification attempt id
-        type: integer
-        x-nullable: true
-      proctored_exam_attempt_id:
-        title: Proctored exam attempt id
-        type: integer
-        x-nullable: true
-      status:
-        title: Status
-        type: string
-        minLength: 1
-  VerifiedNameConfig:
-    required:
-    - username
-    type: object
-    properties:
-      change_date:
-        title: Change date
-        type: string
-        format: date-time
-        readOnly: true
-      username:
-        title: Username
-        type: string
-        minLength: 1
-      use_verified_name_for_certs:
-        title: Use verified name for certs
-        type: boolean
-        x-nullable: true
   CourseEnrollmentsApiList:
     required:
     - course_id
@@ -11570,7 +12874,7 @@ definitions:
           query the latest report generation status.
         type: string
         format: uuid
-  InstructorTask:
+  InstructorTaskSerializerV2:
     required:
     - status
     - task_type
@@ -11641,6 +12945,189 @@ definitions:
         description: List of instructor tasks.
         type: array
         items:
+          $ref: '#/definitions/InstructorTaskSerializerV2'
+  CourseInformationSerializerV2:
+    type: object
+    properties:
+      course_id:
+        title: Course id
+        description: Course run key
+        type: string
+        readOnly: true
+      display_name:
+        title: Display name
+        description: Course display name
+        type: string
+        readOnly: true
+      org:
+        title: Org
+        description: Organization identifier
+        type: string
+        readOnly: true
+      course_number:
+        title: Course number
+        description: Course number
+        type: string
+        readOnly: true
+      course_run:
+        title: Course run
+        description: Course run identifier
+        type: string
+        readOnly: true
+      enrollment_start:
+        title: Enrollment start
+        description: Enrollment start date (ISO 8601 with timezone)
+        type: string
+        readOnly: true
+      enrollment_end:
+        title: Enrollment end
+        description: Enrollment end date (ISO 8601 with timezone)
+        type: string
+        readOnly: true
+      start:
+        title: Start
+        description: Course start date (ISO 8601 with timezone)
+        type: string
+        readOnly: true
+      end:
+        title: End
+        description: Course end date (ISO 8601 with timezone)
+        type: string
+        readOnly: true
+      pacing:
+        title: Pacing
+        description: Course pacing type (self or instructor)
+        type: string
+        readOnly: true
+      has_started:
+        title: Has started
+        description: Whether the course has started based on current time
+        type: string
+        readOnly: true
+      has_ended:
+        title: Has ended
+        description: Whether the course has ended based on current time
+        type: string
+        readOnly: true
+      total_enrollment:
+        title: Total enrollment
+        description: Total number of enrollments across all modes
+        type: string
+        readOnly: true
+      enrollment_counts:
+        title: Enrollment counts
+        description: Enrollment count breakdown by mode
+        type: string
+        readOnly: true
+      num_sections:
+        title: Num sections
+        description: Number of sections/chapters in the course
+        type: string
+        readOnly: true
+      grade_cutoffs:
+        title: Grade cutoffs
+        description: Formatted string of grade cutoffs
+        type: string
+        readOnly: true
+      course_errors:
+        title: Course errors
+        description: List of course validation errors from modulestore
+        type: string
+        readOnly: true
+      studio_url:
+        title: Studio url
+        description: URL to view/edit course in Studio
+        type: string
+        readOnly: true
+      permissions:
+        title: Permissions
+        description: User permissions for instructor dashboard features
+        type: string
+        readOnly: true
+      tabs:
+        title: Tabs
+        description: List of course tabs with configuration and display information
+        type: string
+        readOnly: true
+      disable_buttons:
+        title: Disable buttons
+        description: Whether to disable certain bulk action buttons due to large course
+          size
+        type: string
+        readOnly: true
+      analytics_dashboard_message:
+        title: Analytics dashboard message
+        description: Message about analytics dashboard availability
+        type: string
+        readOnly: true
+  InstructorTask:
+    required:
+    - task_id
+    - task_type
+    - task_state
+    - status
+    - created
+    - duration_sec
+    - task_message
+    - requester
+    - task_input
+    - task_output
+    type: object
+    properties:
+      task_id:
+        title: Task id
+        type: string
+        format: uuid
+      task_type:
+        title: Task type
+        type: string
+        minLength: 1
+      task_state:
+        title: Task state
+        type: string
+        enum:
+        - PENDING
+        - PROGRESS
+        - SUCCESS
+        - FAILURE
+        - REVOKED
+      status:
+        title: Status
+        type: string
+        minLength: 1
+      created:
+        title: Created
+        type: string
+        format: date-time
+      duration_sec:
+        title: Duration sec
+        type: string
+        minLength: 1
+      task_message:
+        title: Task message
+        type: string
+        minLength: 1
+      requester:
+        title: Requester
+        type: string
+        minLength: 1
+      task_input:
+        title: Task input
+        type: string
+        minLength: 1
+      task_output:
+        title: Task output
+        type: string
+        minLength: 1
+        x-nullable: true
+  InstructorTaskList:
+    required:
+    - tasks
+    type: object
+    properties:
+      tasks:
+        type: array
+        items:
           $ref: '#/definitions/InstructorTask'
   ScheduledBulkEmail:
     required:
@@ -11701,6 +13188,52 @@ definitions:
         title: Enddatetime
         type: string
         format: date-time
+  GCMDevice:
+    required:
+    - registration_id
+    type: object
+    properties:
+      id:
+        title: ID
+        type: integer
+      name:
+        title: Name
+        type: string
+        maxLength: 255
+        x-nullable: true
+      registration_id:
+        title: Registration ID
+        type: string
+        minLength: 1
+      device_id:
+        title: Device id
+        description: 'ANDROID_ID / TelephonyManager.getDeviceId() (e.g: 0x01)'
+        type: integer
+        x-nullable: true
+      active:
+        title: Is active
+        description: Inactive devices will not be sent notifications
+        type: boolean
+      date_created:
+        title: Creation date
+        type: string
+        format: date-time
+        readOnly: true
+        x-nullable: true
+      cloud_message_type:
+        title: Cloud Message Type
+        description: You should choose FCM, GCM is deprecated
+        type: string
+        enum:
+        - FCM
+        - GCM
+      application_id:
+        title: Application ID
+        description: Opaque application identity, should be filled in for multiple
+          key/certificate access
+        type: string
+        maxLength: 64
+        x-nullable: true
   mobile_api.User:
     required:
     - username
@@ -11729,39 +13262,6 @@ definitions:
         readOnly: true
       course_enrollments:
         title: Course enrollments
-        type: string
-        readOnly: true
-  CourseEnrollment:
-    type: object
-    properties:
-      audit_access_expires:
-        title: Audit access expires
-        type: string
-        readOnly: true
-      created:
-        title: Created
-        type: string
-        format: date-time
-        readOnly: true
-        x-nullable: true
-      mode:
-        title: Mode
-        type: string
-        maxLength: 100
-        minLength: 1
-      is_active:
-        title: Is active
-        type: boolean
-      course:
-        title: Course
-        type: string
-        readOnly: true
-      certificate:
-        title: Certificate
-        type: string
-        readOnly: true
-      course_modes:
-        title: Course modes
         type: string
         readOnly: true
   Notification:
@@ -11797,6 +13297,11 @@ definitions:
         format: uri
         maxLength: 200
         x-nullable: true
+      course_id:
+        title: Course id
+        type: string
+        maxLength: 255
+        x-nullable: true
       last_read:
         title: Last read
         type: string
@@ -11812,28 +13317,6 @@ definitions:
         type: string
         format: date-time
         readOnly: true
-  CourseOverview:
-    required:
-    - id
-    type: object
-    properties:
-      id:
-        title: Id
-        type: string
-        maxLength: 255
-        minLength: 1
-      display_name:
-        title: Display name
-        type: string
-        minLength: 1
-        x-nullable: true
-  NotificationCourseEnrollment:
-    required:
-    - course
-    type: object
-    properties:
-      course:
-        $ref: '#/definitions/CourseOverview'
   Organization:
     required:
     - name
@@ -12012,15 +13495,31 @@ definitions:
         type: array
         items:
           $ref: '#/definitions/CourseRunOverview'
-  UserMapping:
+  CourseTeamManage:
+    required:
+    - id
     type: object
     properties:
-      username:
-        title: Username
+      id:
+        title: Id
+        type: string
+        maxLength: 255
+        minLength: 1
+      display_name:
+        title: Display name
+        type: string
+        minLength: 1
+        x-nullable: true
+      role:
+        title: Role
         type: string
         readOnly: true
-      remote_id:
-        title: Remote id
+      status:
+        title: Status
+        type: string
+        readOnly: true
+      course_url:
+        title: Course url
         type: string
         readOnly: true
   IDVerificationDetails:

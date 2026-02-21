@@ -15,6 +15,8 @@ from path import Path as path
 from web_fragments.fragment import Fragment
 from xblock.core import XBlock
 from xblock.fields import Boolean, List, Scope, String
+from xblocks_contrib.html import HtmlBlock as _ExtractedHtmlBlock
+from xblocks_contrib.html import HtmlBlockMixin as _ExtractedHtmlBlockMixin
 
 from common.djangoapps.xblock_django.constants import ATTR_KEY_DEPRECATED_ANONYMOUS_USER_ID
 from xmodule.contentstore.content import StaticContent
@@ -22,8 +24,8 @@ from xmodule.editing_block import EditingMixin
 from xmodule.edxnotes_utils import edxnotes
 from xmodule.html_checker import check_html
 from xmodule.stringify import stringify_children
+from xmodule.util.builtin_assets import add_webpack_js_to_fragment, add_css_to_fragment
 from xmodule.util.misc import escape_html_characters
-from xmodule.util.builtin_assets import add_webpack_js_to_fragment, add_sass_to_fragment
 from xmodule.x_module import (
     ResourceTemplates,
     shim_xmodule_js,
@@ -42,14 +44,15 @@ _ = lambda text: text
 @XBlock.needs("i18n")
 @XBlock.needs("mako")
 @XBlock.needs("user")
-class HtmlBlockMixin(  # lint-amnesty, pylint: disable=abstract-method
+class _BuiltinHtmlBlockMixin(  # lint-amnesty, pylint: disable=abstract-method
     XmlMixin, EditingMixin,
-    XModuleToXBlockMixin, ResourceTemplates, XModuleMixin,
+    XModuleToXBlockMixin, XModuleMixin,
 ):
     """
     The HTML XBlock mixin.
     This provides the base class for all Html-ish blocks (including the HTML XBlock).
     """
+
     display_name = String(
         display_name=_("Display Name"),
         help=_("The display name for this component."),
@@ -59,6 +62,13 @@ class HtmlBlockMixin(  # lint-amnesty, pylint: disable=abstract-method
         default=_("Text")
     )
     data = String(help=_("Html contents to display for this block"), default="", scope=Scope.content)
+    upstream_data = String(
+        help=_("Upstream html contents to store upstream data field"),
+        default=None,
+        hidden=True,
+        enforce_type=True,
+        scope=Scope.content,
+    )
     source_code = String(
         help=_("Source code for LaTeX documents. This feature is not well-supported."),
         scope=Scope.settings
@@ -90,7 +100,7 @@ class HtmlBlockMixin(  # lint-amnesty, pylint: disable=abstract-method
         Return a fragment that contains the html for the student view
         """
         fragment = Fragment(self.get_html())
-        add_sass_to_fragment(fragment, 'HtmlBlockDisplay.scss')
+        add_css_to_fragment(fragment, 'HtmlBlockDisplay.css')
         add_webpack_js_to_fragment(fragment, 'HtmlBlockDisplay')
         shim_xmodule_js(fragment, 'HTMLModule')
         return fragment
@@ -118,14 +128,19 @@ class HtmlBlockMixin(  # lint-amnesty, pylint: disable=abstract-method
         """ Returns html required for rendering the block. """
         if self.data:
             data = self.data
-            user_id = (
+            user = (
                 self.runtime.service(self, 'user')
                 .get_current_user()
-                .opt_attrs.get(ATTR_KEY_DEPRECATED_ANONYMOUS_USER_ID)
             )
+            user_id = user.opt_attrs.get(ATTR_KEY_DEPRECATED_ANONYMOUS_USER_ID)
             if user_id:
                 data = data.replace("%%USER_ID%%", user_id)
             data = data.replace("%%COURSE_ID%%", str(self.scope_ids.usage_id.context_key))
+
+            if user.emails:
+                email = user.emails[0]
+                data = data.replace("%%USER_EMAIL%%", email)
+
             return data
         return self.data
 
@@ -133,13 +148,16 @@ class HtmlBlockMixin(  # lint-amnesty, pylint: disable=abstract-method
         """
         Return the studio view.
         """
-        fragment = Fragment(
-            self.runtime.service(self, 'mako').render_cms_template(self.mako_template, self.get_context())
-        )
-        add_sass_to_fragment(fragment, 'HtmlBlockEditor.scss')
-        add_webpack_js_to_fragment(fragment, 'HtmlBlockEditor')
-        shim_xmodule_js(fragment, 'HTMLEditingDescriptor')
-        return fragment
+        # Only the ReactJS editor is supported for this block.
+        # See https://github.com/openedx/frontend-app-authoring/tree/master/src/editors/containers/TextEditor
+        raise NotImplementedError
+
+    @classmethod
+    def get_customizable_fields(cls) -> dict[str, str | None]:
+        return {
+            "display_name": "upstream_display_name",
+            "data": "upstream_data",
+        }
 
     uses_xmodule_styles_setup = True
 
@@ -279,7 +297,7 @@ class HtmlBlockMixin(  # lint-amnesty, pylint: disable=abstract-method
     @classmethod
     def parse_xml_new_runtime(cls, node, runtime, keys):
         """
-        Parse XML in the new learning-core-based runtime. Since it doesn't yet
+        Parse XML in the new openedx_content-based runtime. Since it doesn't yet
         support loading separate .html files, the HTML data is assumed to be in
         a CDATA child or otherwise just inline in the OLX.
         """
@@ -353,11 +371,27 @@ class HtmlBlockMixin(  # lint-amnesty, pylint: disable=abstract-method
 
 
 @edxnotes
-class HtmlBlock(HtmlBlockMixin):  # lint-amnesty, pylint: disable=abstract-method
+class _BuiltInHtmlBlock(_BuiltinHtmlBlockMixin):  # lint-amnesty, pylint: disable=abstract-method
     """
     This is the actual HTML XBlock.
     Nothing extra is required; this is just a wrapper to include edxnotes support.
     """
+    is_extracted = False
+
+
+HtmlBlockMixin = None
+
+
+def reset_Mixin():
+    """Reset Mixin as per django settings flag"""
+    global HtmlBlockMixin
+    HtmlBlockMixin = (
+        _ExtractedHtmlBlockMixin if settings.USE_EXTRACTED_HTML_BLOCK
+        else _BuiltinHtmlBlockMixin
+    )
+    return HtmlBlockMixin
+
+reset_Mixin()
 
 
 class AboutFields:  # lint-amnesty, pylint: disable=missing-class-docstring
@@ -374,7 +408,9 @@ class AboutFields:  # lint-amnesty, pylint: disable=missing-class-docstring
 
 
 @XBlock.tag("detached")
-class AboutBlock(AboutFields, HtmlBlockMixin):  # lint-amnesty, pylint: disable=abstract-method
+# ResourceTemplates is required on the LMS side to load template resources for this AboutBlock.
+# On the CMS side, it is already included via XBLOCK_MIXINS.
+class AboutBlock(AboutFields, ResourceTemplates, HtmlBlockMixin):  # lint-amnesty, pylint: disable=abstract-method
     """
     These pieces of course content are treated as HtmlBlocks but we need to overload where the templates are located
     in order to be able to create new ones
@@ -435,6 +471,7 @@ class CourseInfoFields:
 
 @XBlock.tag("detached")
 @XBlock.needs('replace_urls')
+@XBlock.needs('mako')
 class CourseInfoBlock(CourseInfoFields, HtmlBlockMixin):  # lint-amnesty, pylint: disable=abstract-method
     """
     These pieces of course content are treated as HtmlBlock but we need to overload where the templates are located
@@ -489,3 +526,19 @@ class CourseInfoBlock(CourseInfoFields, HtmlBlockMixin):  # lint-amnesty, pylint
             return datetime.strptime(date, '%B %d, %Y')
         except ValueError:  # occurs for ill-formatted date values
             return datetime.today()
+
+
+HtmlBlock = None
+
+
+def reset_class():
+    """Reset class as per django settings flag"""
+    global HtmlBlock
+    HtmlBlock = (
+        _ExtractedHtmlBlock if settings.USE_EXTRACTED_HTML_BLOCK
+        else _BuiltInHtmlBlock
+    )
+    return HtmlBlock
+
+reset_class()
+HtmlBlock.__name__ = "HtmlBlock"

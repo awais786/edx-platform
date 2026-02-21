@@ -11,17 +11,20 @@ from django.urls import reverse
 from django.utils.translation import gettext as _
 from django.views.decorators.clickjacking import xframe_options_exempt
 from opaque_keys.edx.keys import UsageKey
+from opaque_keys.edx.locator import LibraryContainerLocator
 from rest_framework.request import Request
 from web_fragments.fragment import Fragment
 from xblock.django.request import django_to_webob_request, webob_to_django_response
-from xblock.exceptions import NoSuchHandlerError
+from xblock.exceptions import NoSuchHandlerError, NotFoundError, ProcessingError
 from xblock.runtime import KvsFieldData
 
+from openedx.core.djangoapps.video_config.services import VideoConfigService
+from openedx.core.djangoapps.discussions.services import DiscussionConfigService
 from xmodule.contentstore.django import contentstore
-from xmodule.exceptions import NotFoundError, ProcessingError
+from xmodule.exceptions import NotFoundError as XModuleNotFoundError
 from xmodule.modulestore.django import XBlockI18nService, modulestore
 from xmodule.partitions.partitions_service import PartitionService
-from xmodule.services import SettingsService, TeamsConfigurationService
+from xmodule.services import SettingsService, TeamsConfigurationService, XQueueService
 from xmodule.studio_editable import has_author_view
 from xmodule.util.sandboxing import SandboxService
 from xmodule.util.builtin_assets import add_webpack_js_to_fragment
@@ -29,6 +32,7 @@ from xmodule.x_module import AUTHOR_VIEW, PREVIEW_VIEWS, STUDENT_VIEW, XModuleMi
 from cms.djangoapps.xblock_config.models import StudioConfig
 from cms.djangoapps.contentstore.toggles import individualize_anonymous_user_id
 from cms.lib.xblock.field_data import CmsFieldData
+from cms.lib.xblock.upstream_sync import UpstreamLink
 from common.djangoapps.static_replace.services import ReplaceURLService
 from common.djangoapps.static_replace.wrapper import replace_urls_wrapper
 from common.djangoapps.student.models import anonymous_id_for_user
@@ -45,7 +49,7 @@ from openedx.core.lib.xblock_utils import (
     wrap_xblock_aside
 )
 
-from ..utils import get_visibility_partition_info, StudioPermissionsService
+from ..utils import StudioPermissionsService, get_visibility_partition_info
 from .access import get_user_role
 from .session_kv_store import SessionKeyValueStore
 
@@ -78,7 +82,7 @@ def preview_handler(request, usage_key_string, handler, suffix=''):
         log.exception("XBlock %s attempted to access missing handler %r", instance, handler)
         raise Http404  # lint-amnesty, pylint: disable=raise-missing-from
 
-    except NotFoundError:
+    except (XModuleNotFoundError, NotFoundError):
         log.exception("Module indicating to user that request doesn't exist")
         raise Http404  # lint-amnesty, pylint: disable=raise-missing-from
 
@@ -197,6 +201,17 @@ def _prepare_runtime_for_preview(request, block):
         # See the docstring of `DjangoXBlockUserService`.
         deprecated_anonymous_user_id = anonymous_id_for_user(request.user, None)
 
+    # NOTE: As of Ulmo, these services only apply to the preview views. If you want a service to be present in all
+    # Studio ModuleStoreRuntimes, then add it to load_services_for_studio.
+    # HISTORICAL CONTEXT: Until Ulmo, the `block.runtime._services.update(service)` call below would
+    # actually update the services dictionary for all runtimes, as `_services` was aliased between them.
+    # This caused a grading bug, under certain conditions, so it was fixed
+    # in https://github.com/openedx/openedx-platform/pull/37825; now, every runtime gets a fresh,
+    # independent copy of `_services`. That's good, except that some Studio code had become dependent
+    # on the bugged behavior and thus expected the "preview" services below to be present in all Studio runtimes.
+    # We fixed the known instance of that bugged assumption here:
+    # https://github.com/openedx/openedx-platform/pull/37900.
+    # This comment is left here as a note for future devs investigating similar bugs.
     services = {
         "studio_user_permissions": StudioPermissionsService(request.user),
         "i18n": XBlockI18nService,
@@ -212,7 +227,10 @@ def _prepare_runtime_for_preview(request, block):
         "teams_configuration": TeamsConfigurationService(),
         "sandbox": SandboxService(contentstore=contentstore, course_id=course_id),
         "cache": CacheService(cache),
-        'replace_urls': ReplaceURLService
+        'replace_urls': ReplaceURLService,
+        'video_config': VideoConfigService(),
+        'discussion_config_service': DiscussionConfigService(),
+        'xqueue': XQueueService(block),
     }
 
     block.runtime.get_block_for_descriptor = partial(_load_preview_block, request)
@@ -290,6 +308,8 @@ def _studio_wrap_xblock(xblock, view, frag, context, display_name_only=False):
     """
     Wraps the results of rendering an XBlock view in a div which adds a header and Studio action buttons.
     """
+    # Allow some imported components to be edited by authors in course.
+    editable_library_components = ["html"]
     # Only add the Studio wrapper when on the container page. The "Pages" page will remain as is for now.
     if not context.get('is_pages_view', None) and view in PREVIEW_VIEWS:
         root_xblock = context.get('root_xblock')
@@ -299,9 +319,28 @@ def _studio_wrap_xblock(xblock, view, frag, context, display_name_only=False):
         if selected_groups_label:
             selected_groups_label = _('Access restricted to: {list_of_groups}').format(list_of_groups=selected_groups_label)  # lint-amnesty, pylint: disable=line-too-long
         course = modulestore().get_course(xblock.location.course_key)
+
         can_edit = context.get('can_edit', True)
+        can_add = context.get('can_add', True)
+        can_move = context.get('can_move', True)
+        root_upstream_link = UpstreamLink.try_get_for_block(root_xblock, log_error=False)
+        upstream_link = UpstreamLink.try_get_for_block(xblock, log_error=False)
+        if (
+            root_upstream_link.error_message is None
+            and isinstance(root_upstream_link.upstream_key, LibraryContainerLocator)
+        ):
+            # If this unit is linked to a library unit, for now we make it completely read-only
+            # because when it is synced, all local changes like added components will be lost.
+            # (This is only on the frontend; the backend doesn't enforce it)
+            can_edit = False
+            can_add = False
+            can_move = False
+
+        if upstream_link.error_message is None and upstream_link.upstream_ref:
+            can_edit = xblock.category in editable_library_components
+
         # Is this a course or a library?
-        is_course = xblock.scope_ids.usage_id.context_key.is_course
+        is_course = xblock.context_key.is_course
         tags_count_map = context.get('tags_count_map')
         tags_count = 0
         if tags_count_map:
@@ -314,17 +353,21 @@ def _studio_wrap_xblock(xblock, view, frag, context, display_name_only=False):
             'is_root': is_root,
             'is_reorderable': is_reorderable,
             'can_edit': can_edit,
-            'can_edit_visibility': context.get('can_edit_visibility', is_course),
+            'can_edit_visibility': can_edit and context.get('can_edit_visibility', is_course),
             'course_authoring_url': settings.COURSE_AUTHORING_MICROFRONTEND_URL,
             'is_loading': context.get('is_loading', False),
             'is_selected': context.get('is_selected', False),
             'selectable': context.get('selectable', False),
             'selected_groups_label': selected_groups_label,
-            'can_add': context.get('can_add', True),
-            'can_move': context.get('can_move', is_course),
+            'can_add': can_add,
+            # Generally speaking, "if you can add, you can delete". One exception is itembank (Problem Bank)
+            # which has its own separate "add" workflow but uses the normal delete workflow for its child blocks.
+            'can_delete': can_add or (root_xblock and root_xblock.scope_ids.block_type == "itembank" and can_edit),
+            'can_move': can_move,
             'language': getattr(course, 'language', None),
             'is_course': is_course,
             'tags_count': tags_count,
+            'can_edit_title': True,  # This is always true even for imported components
         }
 
         add_webpack_js_to_fragment(frag, "js/factories/xblock_validation")

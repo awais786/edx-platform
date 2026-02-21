@@ -4,11 +4,10 @@
 from xmodule import templates
 from xmodule.capa_block import ProblemBlock
 from xmodule.course_block import CourseBlock
-from xmodule.html_block import HtmlBlock
 from xmodule.modulestore import ModuleStoreEnum
 from xmodule.modulestore.exceptions import DuplicateCourseError
 from xmodule.modulestore.tests.django_utils import ModuleStoreTestCase
-from xmodule.modulestore.tests.factories import CourseFactory, BlockFactory
+from xmodule.modulestore.tests.factories import BlockFactory, CourseFactory
 from xmodule.seq_block import SequenceBlock
 
 
@@ -21,30 +20,19 @@ class TemplateTests(ModuleStoreTestCase):
         self.assertIsNotNone(found.get('course'))
         self.assertIsNotNone(found.get('about'))
         self.assertIsNotNone(found.get('html'))
-        self.assertIsNotNone(found.get('problem'))
         self.assertEqual(len(found.get('course')), 0)
         self.assertEqual(len(found.get('about')), 1)
         self.assertGreaterEqual(len(found.get('html')), 2)
-        self.assertGreaterEqual(len(found.get('problem')), 10)
-        dropdown = None
-        for template in found['problem']:
-            self.assertIn('metadata', template)
-            self.assertIn('display_name', template['metadata'])
-            if template['metadata']['display_name'] == 'Dropdown':
-                dropdown = template
-                break
-        self.assertIsNotNone(dropdown)
-        self.assertIn('markdown', dropdown['metadata'])
-        self.assertIn('data', dropdown)
-        self.assertRegex(dropdown['metadata']['markdown'], r'.*dropdown problems.*')
-        self.assertRegex(dropdown['data'], r'<problem>\s*<optionresponse>\s*<p>.*dropdown problems.*')
 
     def test_get_some_templates(self):
+        course = CourseFactory.create()
+        htmlblock = BlockFactory.create(category="html", parent_location=course.location)
+
         self.assertEqual(len(SequenceBlock.templates()), 0)
-        self.assertGreater(len(HtmlBlock.templates()), 0)
+        self.assertGreater(len(htmlblock.templates()), 0)
         self.assertIsNone(SequenceBlock.get_template('doesntexist.yaml'))
-        self.assertIsNone(HtmlBlock.get_template('doesntexist.yaml'))
-        self.assertIsNotNone(HtmlBlock.get_template('announcement.yaml'))
+        self.assertIsNone(htmlblock.get_template('doesntexist.yaml'))
+        self.assertIsNotNone(htmlblock.get_template('announcement.yaml'))
 
     def test_factories(self):
         test_course = CourseFactory.create(

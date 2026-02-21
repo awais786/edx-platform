@@ -2,6 +2,7 @@ name: Javascript tests
 
 on:
   pull_request:
+  merge_group:
   push:
     branches:
       - master
@@ -12,23 +13,24 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-20.04]
-        node-version: [18, 20]
+        os: [ubuntu-latest]
+        node-version: [20]
         python-version:
           - "3.11"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Fetch master to compare coverage
         run: git fetch --depth=1 origin master
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
+          cache: 'npm'
 
       - name: Setup npm
-        run: npm i -g npm@10.5.x
+        run: npm i -g npm@10.7.x
 
       - name: Install Firefox 123.0
         run: |
@@ -42,18 +44,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install libxmlsec1-dev ubuntu-restricted-extras xvfb
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Get pip cache dir
         id: pip-cache-dir
         run: |
-          echo "::set-output name=dir::$(pip cache dir)"
+          echo "dir=$(pip cache dir)" >> $GITHUB_OUTPUT
 
       - name: Cache pip dependencies
         id: cache-dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.pip-cache-dir.outputs.dir }}
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements/edx/base.txt') }}
@@ -63,17 +65,15 @@ jobs:
         run: |
           make base-requirements
 
-      - uses: c-hive/gha-npm-cache@v1
+      - name: Install npm
+        run: npm ci  
+
       - name: Run JS Tests
-        env:
-          TEST_SUITE: js-unit
-          SCRIPT_TO_RUN: ./scripts/generic-ci-tests.sh
         run: |
-          npm install -g jest
-          xvfb-run --auto-servernum ./scripts/all-tests.sh
+          npm run test
 
       - name: Save Job Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Build-Artifacts
           path: |

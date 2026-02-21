@@ -13,12 +13,14 @@ from rest_framework.views import APIView
 from cms.djangoapps.contentstore.views.course import get_course_and_check_access
 from cms.djangoapps.contentstore.utils import get_proctored_exam_settings_url
 from cms.djangoapps.models.settings.course_metadata import CourseMetadata
-from common.djangoapps.student.auth import has_studio_advanced_settings_access
-from xmodule.course_block import get_available_providers  # lint-amnesty, pylint: disable=wrong-import-order
+from common.djangoapps.student.auth import check_course_advanced_settings_access
+from xmodule.course_block import (
+    get_available_providers,
+    get_requires_escalation_email_providers,
+)  # lint-amnesty, pylint: disable=wrong-import-order
 from openedx.core.djangoapps.course_apps.toggles import exams_ida_enabled
 from openedx.core.lib.api.view_utils import DeveloperErrorViewMixin, verify_course_exists, view_auth_classes
 from xmodule.modulestore.django import modulestore  # lint-amnesty, pylint: disable=wrong-import-order
-
 from ..serializers import (
     LimitedProctoredExamSettingsSerializer,
     ProctoredExamConfigurationSerializer,
@@ -49,7 +51,8 @@ class ProctoredExamSettingsView(APIView):
 
     **Response**
 
-        In the case of a 200 response code, the response will proctored exam settings data
+        In the case of a 200 response code, the response will proctored exam settings data,
+        list of proctoring backends that have 'requires_escalation_email' set to 'True'
         as well as other metadata about the course or the requesting user that are necessary
         for rendering the settings page.
 
@@ -65,7 +68,10 @@ class ProctoredExamSettingsView(APIView):
             },
             "available_proctoring_providers": [
                 "mockprock",
-                "proctortrack"
+                "software_secure",
+            ],
+            "requires_escalation_email_providers": [
+                "software_secure"
             ],
             "course_start_date": "2013-02-05T05:00:00Z",
         }
@@ -108,10 +114,15 @@ class ProctoredExamSettingsView(APIView):
             data['course_start_date'] = course_metadata['start'].get('value')
 
             available_providers = get_available_providers()
+            requires_escalation_email_providers = (
+                get_requires_escalation_email_providers()
+            )
             if not exams_ida_enabled(CourseKey.from_string(course_id)):
                 available_providers.remove('lti_external')
+                requires_escalation_email_providers.remove('lti_external')
 
             data['available_proctoring_providers'] = available_providers
+            data['requires_escalation_email_providers'] = requires_escalation_email_providers
 
             serializer = ProctoredExamConfigurationSerializer(data)
 
@@ -248,7 +259,9 @@ class ProctoringErrorsView(DeveloperErrorViewMixin, APIView):
         ```
         """
         course_key = CourseKey.from_string(course_id)
-        if not has_studio_advanced_settings_access(request.user):
+        if not check_course_advanced_settings_access(
+            request.user, course_key, access_type='feature_restricted'
+        ):
             self.permission_denied(request)
 
         course_block = modulestore().get_course(course_key)

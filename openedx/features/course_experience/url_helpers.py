@@ -10,13 +10,14 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.http import HttpRequest
 from django.http.request import QueryDict
-from django.urls import reverse
 from opaque_keys.edx.keys import CourseKey, UsageKey
-from six.moves.urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
-from lms.djangoapps.courseware.toggles import courseware_mfe_is_active
+from xmodule.modulestore import ModuleStoreEnum  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.modulestore.django import modulestore  # lint-amnesty, pylint: disable=wrong-import-order
-from xmodule.modulestore.search import navigation_index, path_to_location  # lint-amnesty, pylint: disable=wrong-import-order
+from xmodule.modulestore.search import path_to_location  # lint-amnesty, pylint: disable=wrong-import-order
+
+from openedx.core.djangoapps.site_configuration import helpers as configuration_helpers
 
 User = get_user_model()
 
@@ -24,6 +25,7 @@ User = get_user_model()
 def get_courseware_url(
         usage_key: UsageKey,
         request: Optional[HttpRequest] = None,
+        is_staff: bool = False,
 ) -> str:
     """
     Return the URL to the canonical learning experience for a given block.
@@ -40,56 +42,13 @@ def get_courseware_url(
         * ItemNotFoundError if no data at the `usage_key`.
         * NoPathToItem if we cannot build a path to the `usage_key`.
     """
-    if courseware_mfe_is_active():
-        get_url_fn = _get_new_courseware_url
-    else:
-        get_url_fn = _get_legacy_courseware_url
-    return get_url_fn(usage_key=usage_key, request=request)
-
-
-def _get_legacy_courseware_url(
-        usage_key: UsageKey,
-        request: Optional[HttpRequest] = None,
-) -> str:
-    """
-    Return the URL to Legacy (LMS-rendered) courseware content.
-
-    Raises:
-        * ItemNotFoundError if no data at the usage_key.
-        * NoPathToItem if location not in any class.
-    """
-    (
-        course_key, chapter, section, vertical_unused,
-        position, final_target_id
-    ) = path_to_location(modulestore(), usage_key, request)
-
-    # choose the appropriate view (and provide the necessary args) based on the
-    # args provided by the redirect.
-    # Rely on index to do all error handling and access control.
-    if chapter is None:
-        redirect_url = reverse('courseware', args=(str(course_key), ))
-    elif section is None:
-        redirect_url = reverse('courseware_chapter', args=(str(course_key), chapter))
-    elif position is None:
-        redirect_url = reverse(
-            'courseware_section',
-            args=(str(course_key), chapter, section)
-        )
-    else:
-        # Here we use the navigation_index from the position returned from
-        # path_to_location - we can only navigate to the topmost vertical at the
-        # moment
-        redirect_url = reverse(
-            'courseware_position',
-            args=(str(course_key), chapter, section, navigation_index(position))
-        )
-    redirect_url += "?{}".format(urlencode({'activate_block_id': str(final_target_id)}))
-    return redirect_url
+    return _get_new_courseware_url(usage_key=usage_key, request=request, is_staff=is_staff)
 
 
 def _get_new_courseware_url(
         usage_key: UsageKey,
         request: Optional[HttpRequest] = None,
+        is_staff: bool = None,
 ) -> str:
     """
     Return the URL to the "new" (Learning Micro-Frontend) experience for a given block.
@@ -99,7 +58,13 @@ def _get_new_courseware_url(
         * NoPathToItem if we cannot build a path to the `usage_key`.
     """
     course_key = usage_key.course_key.replace(version_guid=None, branch=None)
-    path = path_to_location(modulestore(), usage_key, request, full_path=True)
+    preview = request.GET.get('preview') if request and request.GET else False
+    branch_type = (
+        ModuleStoreEnum.Branch.draft_preferred
+    ) if preview and is_staff else ModuleStoreEnum.Branch.published_only
+
+    path = path_to_location(modulestore(), usage_key, request, full_path=True, branch_type=branch_type)
+
     if len(path) <= 1:
         # Course-run-level block:
         # We have no Sequence or Unit to return.
@@ -120,6 +85,7 @@ def _get_new_courseware_url(
         course_key=course_key,
         sequence_key=sequence_key,
         unit_key=unit_key,
+        preview=preview,
         params=request.GET if request and request.GET else None,
     )
 
@@ -129,6 +95,7 @@ def make_learning_mfe_courseware_url(
         sequence_key: Optional[UsageKey] = None,
         unit_key: Optional[UsageKey] = None,
         params: Optional[QueryDict] = None,
+        preview: bool = None,
 ) -> str:
     """
     Return a str with the URL for the specified courseware content in the Learning MFE.
@@ -153,13 +120,27 @@ def make_learning_mfe_courseware_url(
 
     We're building a URL like this:
 
-    http://localhost:2000/course/course-v1:edX+DemoX+Demo_Course/block-v1:edX+DemoX+Demo_Course+type@sequential+block@19a30717eff543078a5d94ae9d6c18a5/block-v1:edX+DemoX+Demo_Course+type@vertical+block@4a1bba2a403f40bca5ec245e945b0d76
+    {LEARNING_MICROFRONTEND_URL}/course/{course_id}/{sequence_id}/{veritcal_id}
 
     `course_key`, `sequence_key`, and `unit_key` can be either OpaqueKeys or
     strings. They're only ever used to concatenate a URL string.
     `params` is an optional QueryDict object (e.g. request.GET)
     """
-    mfe_link = f'{settings.LEARNING_MICROFRONTEND_URL}/course/{course_key}'
+    learning_microfrontend_url = configuration_helpers.get_value(
+        'LEARNING_MICROFRONTEND_URL',
+        settings.LEARNING_MICROFRONTEND_URL,
+    )
+    mfe_link = f'{learning_microfrontend_url}/course/{course_key}'
+    get_params = params.copy() if params else None
+
+    if preview:
+        if len(get_params.keys()) > 1:
+            get_params.pop('preview')
+        else:
+            get_params = None
+
+        if (unit_key or sequence_key):
+            mfe_link = f'{learning_microfrontend_url}/preview/course/{course_key}'
 
     if sequence_key:
         mfe_link += f'/{sequence_key}'
@@ -167,8 +148,8 @@ def make_learning_mfe_courseware_url(
         if unit_key:
             mfe_link += f'/{unit_key}'
 
-    if params:
-        mfe_link += f'?{params.urlencode()}'
+    if get_params:
+        mfe_link += f'?{get_params.urlencode()}'
 
     return mfe_link
 
@@ -183,13 +164,17 @@ def get_learning_mfe_home_url(
 
     We're building a URL like this:
 
-    http://localhost:2000/course/course-v1:edX+DemoX+Demo_Course/dates
+    {LEARNING_MICROFRONTEND_URL}/course/course-v1:edX+DemoX+Demo_Course/dates
 
     `course_key` can be either an OpaqueKey or a string.
     `url_fragment` is an optional string.
     `params` is an optional QueryDict object (e.g. request.GET)
     """
-    mfe_link = f'{settings.LEARNING_MICROFRONTEND_URL}/course/{course_key}'
+    learning_microfrontend_url = configuration_helpers.get_value(
+        'LEARNING_MICROFRONTEND_URL',
+        settings.LEARNING_MICROFRONTEND_URL,
+    )
+    mfe_link = f'{learning_microfrontend_url}/course/{course_key}'
 
     if url_fragment:
         mfe_link += f'/{url_fragment}'
@@ -204,9 +189,13 @@ def is_request_from_learning_mfe(request: HttpRequest):
     """
     Returns whether the given request was made by the frontend-app-learning MFE.
     """
-    if not settings.LEARNING_MICROFRONTEND_URL:
+    url_str = configuration_helpers.get_value(
+        'LEARNING_MICROFRONTEND_URL',
+        settings.LEARNING_MICROFRONTEND_URL,
+    )
+    if not url_str:
         return False
 
-    url = urlparse(settings.LEARNING_MICROFRONTEND_URL)
+    url = urlparse(url_str)
     mfe_url_base = f'{url.scheme}://{url.netloc}'
     return request.META.get('HTTP_REFERER', '').startswith(mfe_url_base)

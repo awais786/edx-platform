@@ -16,7 +16,7 @@ from celery.states import READY_STATES
 
 from common.djangoapps.util import milestones_helpers
 from lms.djangoapps.bulk_email.api import get_course_email
-from lms.djangoapps.certificates.models import CertificateGenerationHistory
+from lms.djangoapps.certificates.api import create_or_update_certificate_generation_history
 from lms.djangoapps.instructor_task.api_helper import (
     QueueConnectionError,
     check_arguments_for_overriding,
@@ -32,6 +32,7 @@ from lms.djangoapps.instructor_task.data import InstructorTaskTypes
 from lms.djangoapps.instructor_task.models import InstructorTask, InstructorTaskSchedule, SCHEDULED
 from lms.djangoapps.instructor_task.tasks import (
     calculate_grades_csv,
+    calculate_inactive_enrolled_students_info_csv,
     calculate_may_enroll_csv,
     calculate_problem_grade_report,
     calculate_problem_responses_csv,
@@ -409,6 +410,21 @@ def submit_calculate_may_enroll_csv(request, course_key, features):
     return submit_task(request, task_type, task_class, course_key, task_input, task_key)
 
 
+def submit_calculate_inactive_enrolled_students_csv(request, course_key, features):
+    """
+    Submits a task to generate a CSV file containing information about
+    enrolled students in a course who have not activated their account yet.
+
+    Raises AlreadyRunningError if said file is already being updated.
+    """
+    task_type = InstructorTaskTypes.INACTIVE_ENROLLED_STUDENTS_INFO_CSV
+    task_class = calculate_inactive_enrolled_students_info_csv
+    task_input = {'features': features}
+    task_key = ""
+
+    return submit_task(request, task_type, task_class, course_key, task_input, task_key)
+
+
 def submit_course_survey_report(request, course_key):
     """
     Submits a task to generate a HTML File containing the executive summary report.
@@ -524,12 +540,14 @@ def generate_certificates_for_students(request, course_key, student_set=None, sp
     task_key = ""
     instructor_task = submit_task(request, task_type, task_class, course_key, task_input, task_key)
 
-    CertificateGenerationHistory.objects.create(
-        course_id=course_key,
-        generated_by=request.user,
-        instructor_task=instructor_task,
-        is_regeneration=False
-    )
+    cert_filter_args = {
+        "course_id": course_key,
+        "generated_by": request.user,
+        "instructor_task": instructor_task,
+        "is_regeneration": False
+    }
+
+    create_or_update_certificate_generation_history(**cert_filter_args)
 
     return instructor_task
 
@@ -551,12 +569,14 @@ def regenerate_certificates(request, course_key, statuses_to_regenerate):
 
     instructor_task = submit_task(request, task_type, task_class, course_key, task_input, task_key)
 
-    CertificateGenerationHistory.objects.create(
-        course_id=course_key,
-        generated_by=request.user,
-        instructor_task=instructor_task,
-        is_regeneration=True
-    )
+    cert_filter_args = {
+        "course_id": course_key,
+        "generated_by": request.user,
+        "instructor_task": instructor_task,
+        "is_regeneration": True
+    }
+
+    create_or_update_certificate_generation_history(**cert_filter_args)
 
     return instructor_task
 

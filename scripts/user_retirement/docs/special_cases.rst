@@ -1,6 +1,5 @@
 .. _handling-special-cases:
 
-######################
 Handling Special Cases
 ######################
 

@@ -44,9 +44,15 @@ from openedx.core.lib.api.test_utils import ApiTestCase
 from openedx.features.enterprise_support.tests.factories import EnterpriseCustomerUserFactory
 from common.djangoapps.student.models import LoginFailures
 from common.djangoapps.util.password_policy_validators import DEFAULT_MAX_PASSWORD_LENGTH
+from common.test.utils import assert_dict_contains_subset
 
 
 @ddt.ddt
+# HIBP settings are only defined in lms envs but needed for common tests.
+@override_settings(
+    ENABLE_AUTHN_LOGIN_BLOCK_HIBP_POLICY=False,
+    ENABLE_AUTHN_LOGIN_NUDGE_HIBP_POLICY=False,
+)
 class LoginTest(SiteMixin, CacheIsolationTestCase, OpenEdxEventsTestMixin):
     """
     Test login_user() view
@@ -380,7 +386,11 @@ class LoginTest(SiteMixin, CacheIsolationTestCase, OpenEdxEventsTestMixin):
         )
         self._assert_not_in_audit_log(mock_audit_log, 'warning', [self.user_email])
 
-    @override_settings(ENABLE_AUTHN_LOGIN_BLOCK_HIBP_POLICY=True)
+    # HIBP settings are only defined in lms envs but needed for common tests.
+    @override_settings(
+        ENABLE_AUTHN_LOGIN_BLOCK_HIBP_POLICY=True,
+        HIBP_LOGIN_BLOCK_PASSWORD_FREQUENCY_THRESHOLD=5.0,
+    )
     @override_waffle_switch(ENABLE_PWNED_PASSWORD_API, True)
     def test_password_compliance_block_error(self):
         """
@@ -394,7 +404,11 @@ class LoginTest(SiteMixin, CacheIsolationTestCase, OpenEdxEventsTestMixin):
 
         self._assert_response(response, success=False, error_code='require-password-change')
 
-    @override_settings(ENABLE_AUTHN_LOGIN_NUDGE_HIBP_POLICY=True)
+    # HIBP settings are only defined in lms envs but needed for common tests.
+    @override_settings(
+        ENABLE_AUTHN_LOGIN_NUDGE_HIBP_POLICY=True,
+        HIBP_LOGIN_NUDGE_PASSWORD_FREQUENCY_THRESHOLD=3.0,
+    )
     @override_waffle_switch(ENABLE_PWNED_PASSWORD_API, True)
     def test_password_compliance_nudge_error(self):
         """
@@ -496,7 +510,7 @@ class LoginTest(SiteMixin, CacheIsolationTestCase, OpenEdxEventsTestMixin):
 
         # Check that the URLs are absolute
         for url in user_info["header_urls"].values():
-            assert 'http://testserver/' in url
+            assert 'http://' in url
 
     def test_logout_deletes_mktg_cookies(self):
         response, _ = self._login_response(self.user_email, self.password)
@@ -531,7 +545,7 @@ class LoginTest(SiteMixin, CacheIsolationTestCase, OpenEdxEventsTestMixin):
         expected = {
             'target': '/',
         }
-        self.assertDictContainsSubset(expected, response.context_data)
+        assert_dict_contains_subset(self, expected, response.context_data)
 
     @patch.dict("django.conf.settings.FEATURES", {'SQUELCH_PII_IN_LOGS': True})
     def test_logout_logging_no_pii(self):
@@ -1027,8 +1041,7 @@ class LoginTest(SiteMixin, CacheIsolationTestCase, OpenEdxEventsTestMixin):
 
             with self.assertLogs(level='WARN') as log:
                 _check_user_auth_flow(site, invalid_email_user)
-                assert len(log.output) == 1
-                assert "Shortcircuiting THIRD_PART_AUTH_ONLY_DOMAIN check." in log.output[0]
+                assert any("Shortcircuiting THIRD_PARTY_AUTH_ONLY_DOMAIN check." in warning for warning in log.output)
 
 
 @ddt.ddt
@@ -1041,7 +1054,6 @@ class LoginSessionViewTest(ApiTestCase, OpenEdxEventsTestMixin):
     USERNAME = "bob"
     EMAIL = "bob@example.com"
     PASSWORD = "password"
-    REGISTER_INTENT = 'true'
 
     @classmethod
     def setUpClass(cls):
@@ -1118,7 +1130,6 @@ class LoginSessionViewTest(ApiTestCase, OpenEdxEventsTestMixin):
         data = {
             "email": self.EMAIL,
             "password": self.PASSWORD,
-            "register_intent": self.REGISTER_INTENT,
         }
         if include_analytics:
             track_label = "edX/DemoX/Fall"
@@ -1147,7 +1158,7 @@ class LoginSessionViewTest(ApiTestCase, OpenEdxEventsTestMixin):
         mock_segment.track.assert_called_once_with(
             expected_user_id,
             'edx.bi.user.account.authenticated',
-            {'category': 'conversion', 'provider': None, 'label': track_label, 'register_intent': True}
+            {'category': 'conversion', 'provider': None, 'label': track_label, 'anonymous_id': ''}
         )
 
     def test_login_with_username(self):

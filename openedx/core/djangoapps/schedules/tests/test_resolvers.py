@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import crum
 import ddt
-import pytz
+from zoneinfo import ZoneInfo
 from django.test import TestCase
 from django.test.client import RequestFactory
 from django.test.utils import override_settings
@@ -123,7 +123,7 @@ class TestBinnedSchedulesBaseResolver(SchedulesResolverTestMixin, TestCase):
         # experiment. Note that the experiment waffle is currently inactive, but they should still be excluded because
         # they were bucketed at enrollment time.
         bin_num = BinnedSchedulesBaseResolver.bin_num_for_user_id(user.id)
-        resolver = BinnedSchedulesBaseResolver(None, self.site, datetime.datetime.now(pytz.UTC), 0, bin_num)
+        resolver = BinnedSchedulesBaseResolver(None, self.site, datetime.datetime.now(ZoneInfo("UTC")), 0, bin_num)
         resolver.schedule_date_field = 'created'
         schedules = resolver.get_schedules_with_target_date_by_bin_and_orgs()
 
@@ -235,7 +235,7 @@ class TestCourseNextSectionUpdateResolver(SchedulesResolverTestMixin, ModuleStor
 
     def setUp(self):
         super().setUp()
-        self.today = datetime.datetime.utcnow()
+        self.today = datetime.datetime.now(ZoneInfo("UTC"))
         self.yesterday = self.today - datetime.timedelta(days=1)
         self.course = CourseFactory.create(
             highlights_enabled_for_messaging=True, self_paced=True,
@@ -271,10 +271,12 @@ class TestCourseNextSectionUpdateResolver(SchedulesResolverTestMixin, ModuleStor
 
     @override_settings(CONTACT_MAILING_ADDRESS='123 Sesame Street')
     @override_settings(LOGO_URL_PNG='https://www.logo.png')
+    @override_settings(SELF_PACED_BANNER_URL='')
+    @override_settings(SELF_PACED_CLOUD_URL='')
     def test_schedule_context(self):
         resolver = self.create_resolver()
         # using this to make sure the select_related stays intact
-        with self.assertNumQueries(30):
+        with self.assertNumQueries(26):
             sc = resolver.get_schedules()
             schedules = list(sc)
         apple_logo_url = 'http://email-media.s3.amazonaws.com/edX/2021/store_apple_229x78.jpg'
@@ -293,6 +295,7 @@ class TestCourseNextSectionUpdateResolver(SchedulesResolverTestMixin, ModuleStor
             'contact_email': 'info@example.com',
             'contact_mailing_address': '123 Sesame Street',
             'course_ids': [str(self.course.id)],
+            'course_id': str(self.course.id),
             'course_name': self.course.display_name,
             'course_url': f'http://learning-mfe/course/{self.course.id}/home',
             'dashboard_url': '/dashboard',
@@ -315,6 +318,8 @@ class TestCourseNextSectionUpdateResolver(SchedulesResolverTestMixin, ModuleStor
                                   'twitter': twitter_url},
             'template_revision': 'release',
             'unsubscribe_url': None,
+            'self_paced_banner_url': '',
+            'self_paced_cloud_url': '',
             'week_highlights': ['good stuff 2'],
             'week_num': 2,
         }

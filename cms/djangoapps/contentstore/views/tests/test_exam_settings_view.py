@@ -8,24 +8,27 @@ import ddt
 import lxml
 from django.conf import settings
 from django.test.utils import override_settings
+from edx_toggles.toggles.testutils import override_waffle_flag
 
+from cms.djangoapps.contentstore import toggles
 from cms.djangoapps.contentstore.tests.utils import CourseTestCase
 from cms.djangoapps.contentstore.utils import get_proctored_exam_settings_url, reverse_course_url
 from common.djangoapps.util.testing import UrlResetMixin
 
-FEATURES_WITH_CERTS_ENABLED = settings.FEATURES.copy()
-FEATURES_WITH_CERTS_ENABLED['CERTIFICATES_HTML_VIEW'] = True
-
-FEATURES_WITH_EXAM_SETTINGS_ENABLED = FEATURES_WITH_CERTS_ENABLED.copy()
-FEATURES_WITH_EXAM_SETTINGS_ENABLED['ENABLE_EXAM_SETTINGS_HTML_VIEW'] = True
-FEATURES_WITH_EXAM_SETTINGS_ENABLED['ENABLE_PROCTORED_EXAMS'] = True
-
-FEATURES_WITH_EXAM_SETTINGS_DISABLED = FEATURES_WITH_CERTS_ENABLED.copy()
-FEATURES_WITH_EXAM_SETTINGS_DISABLED['ENABLE_EXAM_SETTINGS_HTML_VIEW'] = False
-FEATURES_WITH_EXAM_SETTINGS_DISABLED['ENABLE_PROCTORED_EXAMS'] = True
-
 
 @ddt.ddt
+@override_settings(
+    FEATURES={
+        **settings.FEATURES,
+        "CERTIFICATES_HTML_VIEW": True,
+        "ENABLE_PROCTORED_EXAMS": True,
+    },
+)
+@override_waffle_flag(toggles.LEGACY_STUDIO_CERTIFICATES, True)
+@override_waffle_flag(toggles.LEGACY_STUDIO_SCHEDULE_DETAILS, True)
+@override_waffle_flag(toggles.LEGACY_STUDIO_CONFIGURATIONS, True)
+@override_waffle_flag(toggles.LEGACY_STUDIO_GRADING, True)
+@override_waffle_flag(toggles.LEGACY_STUDIO_ADVANCED_SETTINGS, True)
 class TestExamSettingsView(CourseTestCase, UrlResetMixin):
     """
     Unit tests for the exam settings view.
@@ -46,7 +49,7 @@ class TestExamSettingsView(CourseTestCase, UrlResetMixin):
         alert_node = alert_nodes[0]
         return alert_node.text_content()
 
-    @override_settings(FEATURES=FEATURES_WITH_EXAM_SETTINGS_DISABLED)
+    @override_waffle_flag(toggles.LEGACY_STUDIO_EXAM_SETTINGS, True)
     @ddt.data(
         "certificates_list_handler",
         "settings_handler",
@@ -64,7 +67,6 @@ class TestExamSettingsView(CourseTestCase, UrlResetMixin):
         self.assertEqual(resp.status_code, 200)
         self.assertNotContains(resp, 'Proctored Exam Settings')
 
-    @override_settings(FEATURES=FEATURES_WITH_EXAM_SETTINGS_ENABLED)
     @ddt.data(
         "certificates_list_handler",
         "settings_handler",
@@ -85,22 +87,20 @@ class TestExamSettingsView(CourseTestCase, UrlResetMixin):
     @override_settings(
         PROCTORING_BACKENDS={
             'DEFAULT': 'test_proctoring_provider',
-            'proctortrack': {}
+            'test_proctoring_provider': {"requires_escalation_email": True}
         },
-        FEATURES=FEATURES_WITH_EXAM_SETTINGS_ENABLED,
     )
     @ddt.data(
         "advanced_settings_handler",
-        "course_handler",
     )
     def test_exam_settings_alert_with_exam_settings_enabled(self, page_handler):
         """
         An alert should appear if current exam settings are invalid.
         The exam settings alert should direct users to the exam settings page.
         """
-        # create an error by setting proctortrack as the provider and not setting
+        # create an error by setting 'requires_escalation_email' as 'True' and not setting
         # the (required) escalation contact
-        self.course.proctoring_provider = 'proctortrack'
+        self.course.proctoring_provider = 'test_proctoring_provider'
         self.course.enable_proctored_exams = True
         self.save_course()
 
@@ -123,23 +123,22 @@ class TestExamSettingsView(CourseTestCase, UrlResetMixin):
     @override_settings(
         PROCTORING_BACKENDS={
             'DEFAULT': 'test_proctoring_provider',
-            'proctortrack': {}
+            'test_proctoring_provider': {"requires_escalation_email": True}
         },
-        FEATURES=FEATURES_WITH_EXAM_SETTINGS_DISABLED,
     )
     @ddt.data(
         "advanced_settings_handler",
-        "course_handler",
     )
+    @override_waffle_flag(toggles.LEGACY_STUDIO_EXAM_SETTINGS, True)
     def test_exam_settings_alert_with_exam_settings_disabled(self, page_handler):
         """
         An alert should appear if current exam settings are invalid.
         The exam settings alert should direct users to the advanced settings page
         if the exam settings feature is not available.
         """
-        # create an error by setting proctortrack as the provider and not setting
+        # create an error by setting 'requires_escalation_email' as 'True' and not setting
         # the (required) escalation contact
-        self.course.proctoring_provider = 'proctortrack'
+        self.course.proctoring_provider = 'test_proctoring_provider'
         self.course.enable_proctored_exams = True
         self.save_course()
 
@@ -162,9 +161,38 @@ class TestExamSettingsView(CourseTestCase, UrlResetMixin):
         else:
             assert 'To update these settings go to the Advanced Settings page.' in alert_text
 
+    @override_settings(
+        PROCTORING_BACKENDS={
+            'DEFAULT': 'test_proctoring_provider',
+            'test_proctoring_provider': {},
+        },
+    )
     @ddt.data(
         "advanced_settings_handler",
-        "course_handler",
+    )
+    def test_invalid_provider_alert(self, page_handler):
+        """
+        An alert should appear if the course has a proctoring provider that is not valid.
+        """
+        # create an error by setting an invalid proctoring provider
+        self.course.proctoring_provider = 'invalid_provider'
+        self.course.enable_proctored_exams = True
+        self.save_course()
+
+        url = reverse_course_url(page_handler, self.course.id)
+        resp = self.client.get(url, HTTP_ACCEPT='text/html')
+        alert_text = self._get_exam_settings_alert_text(resp.content)
+        assert (
+            'This course has proctored exam settings that are incomplete or invalid.'
+            in alert_text
+        )
+        assert (
+            'The proctoring provider configured for this course, \'invalid_provider\', is not valid.'
+            in alert_text
+        )
+
+    @ddt.data(
+        "advanced_settings_handler",
     )
     def test_exam_settings_alert_not_shown(self, page_handler):
         """
@@ -179,7 +207,6 @@ class TestExamSettingsView(CourseTestCase, UrlResetMixin):
         alert_nodes = parsed_html.find_class('exam-settings-alert')
         assert len(alert_nodes) == 0
 
-    @override_settings(FEATURES={'ENABLE_EXAM_SETTINGS_HTML_VIEW': True})
     @patch('cms.djangoapps.models.settings.course_metadata.CourseMetadata.validate_proctoring_settings')
     def test_proctoring_link_is_visible(self, mock_validate_proctoring_settings):
 

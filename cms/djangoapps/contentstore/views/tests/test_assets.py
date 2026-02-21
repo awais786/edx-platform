@@ -84,9 +84,10 @@ class BasicAssetsTestCase(AssetsTestCase):
     """
     Test getting assets via html w/o additional args
     """
+
     def test_basic(self):
         resp = self.client.get(self.url, HTTP_ACCEPT='text/html')
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 302)
 
     def test_static_url_generation(self):
 

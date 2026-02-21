@@ -8,13 +8,19 @@ from unittest.mock import patch
 from django.test import override_settings, LiveServerTestCase
 from django.http import HttpRequest
 from edx_toggles.toggles.testutils import override_waffle_flag
-from openedx_tagging.core.tagging.models import Tag, Taxonomy, ObjectTag
+from openedx_tagging.models import Tag, Taxonomy, ObjectTag
 from organizations.models import Organization
 
 from common.djangoapps.student.tests.factories import UserFactory
 from openedx.core.djangolib.testing.utils import skip_unless_cms
-from xmodule.modulestore.tests.django_utils import TEST_DATA_SPLIT_MODULESTORE, ModuleStoreTestCase
-from openedx.core.djangoapps.content_libraries.api import create_library, create_library_block, delete_library_block
+from xmodule.modulestore.tests.django_utils import (
+    TEST_DATA_SPLIT_MODULESTORE,
+    ModuleStoreTestCase,
+    ImmediateOnCommitMixin,
+)
+from openedx.core.djangoapps.content_libraries.api import (
+    create_library, create_library_block, delete_library_block, restore_library_block
+)
 
 from .. import api
 from ..models.base import TaxonomyOrg
@@ -35,9 +41,9 @@ class LanguageTaxonomyTestMixin:
         running migrations. So data created by our migrations is not present.
         In particular, the Language Taxonomy is not present. So this mixin will
         create the taxonomy, simulating the effect of the following migrations:
-            1. openedx_tagging.core.tagging.migrations.0012_language_taxonomy
+            1. openedx_tagging.migrations.0012_language_taxonomy
             2. content_tagging.migrations.0007_system_defined_org_2
-            3. openedx_tagging.core.tagging.migrations.0015_taxonomy_export_id
+            3. openedx_tagging.migrations.0015_taxonomy_export_id
         """
         super().setUp()
         Taxonomy.objects.get_or_create(id=-1, defaults={
@@ -48,7 +54,7 @@ class LanguageTaxonomyTestMixin:
             "allow_free_text": False,
             "visible_to_authors": True,
             "export_id": "-1_languages",
-            "_taxonomy_class": "openedx_tagging.core.tagging.models.system_defined.LanguageTaxonomy",
+            "_taxonomy_class": "openedx_tagging.models.system_defined.LanguageTaxonomy",
         })
         TaxonomyOrg.objects.get_or_create(taxonomy_id=-1, defaults={"org": None})
 
@@ -57,6 +63,7 @@ class LanguageTaxonomyTestMixin:
 @override_waffle_flag(CONTENT_TAGGING_AUTO, active=True)
 class TestAutoTagging(  # type: ignore[misc]
     LanguageTaxonomyTestMixin,
+    ImmediateOnCommitMixin,
     ModuleStoreTestCase,
     LiveServerTestCase
 ):
@@ -267,7 +274,7 @@ class TestAutoTagging(  # type: ignore[misc]
         # Still no tags
         assert self._check_tag(usage_key_str, LANGUAGE_TAXONOMY_ID, None)
 
-    def test_create_delete_library_block(self):
+    def test_create_delete_restore_library_block(self):
         # Create library
         library = create_library(
             org=self.orgA,
@@ -287,11 +294,17 @@ class TestAutoTagging(  # type: ignore[misc]
         # Check if the tags are created in the Library Block with the user's preferred language
         assert self._check_tag(usage_key_str, LANGUAGE_TAXONOMY_ID, 'Português (Brasil)')
 
-        # Delete the XBlock
+        # Soft delete the XBlock
         delete_library_block(library_block.usage_key)
 
-        # Check if the tags are deleted
-        assert self._check_tag(usage_key_str, LANGUAGE_TAXONOMY_ID, None)
+        # Check that the tags are not deleted
+        assert self._check_tag(usage_key_str, LANGUAGE_TAXONOMY_ID, 'Português (Brasil)')
+
+        # Restore the XBlock
+        restore_library_block(library_block.usage_key)
+
+        # Check if the tags are still present in the Library Block with the user's preferred language
+        assert self._check_tag(usage_key_str, LANGUAGE_TAXONOMY_ID, 'Português (Brasil)')
 
     @override_waffle_flag(CONTENT_TAGGING_AUTO, active=False)
     def test_waffle_disabled_create_delete_library_block(self):
@@ -316,6 +329,13 @@ class TestAutoTagging(  # type: ignore[misc]
 
         # Delete the XBlock
         delete_library_block(library_block.usage_key)
+
+        # Still no tags
+        assert self._check_tag(usage_key_str, LANGUAGE_TAXONOMY_ID, None)
+
+        # Restore the XBlock
+        with patch('crum.get_current_request', return_value=fake_request):
+            restore_library_block(library_block.usage_key)
 
         # Still no tags
         assert self._check_tag(usage_key_str, LANGUAGE_TAXONOMY_ID, None)

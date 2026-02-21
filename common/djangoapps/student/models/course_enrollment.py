@@ -5,6 +5,7 @@ import uuid  # lint-amnesty, pylint: disable=wrong-import-order
 from collections import defaultdict, namedtuple  # lint-amnesty, pylint: disable=wrong-import-order
 from datetime import date, datetime, timedelta  # lint-amnesty, pylint: disable=wrong-import-order
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 from config_models.models import ConfigurationModel
 from django.conf import settings
@@ -29,7 +30,6 @@ from openedx_events.learning.signals import (
     COURSE_UNENROLLMENT_COMPLETED,
 )
 from openedx_filters.learning.filters import CourseEnrollmentStarted, CourseUnenrollmentStarted
-from pytz import UTC
 from requests.exceptions import HTTPError, RequestException
 from simple_history.models import HistoricalRecords
 
@@ -129,10 +129,69 @@ class UnenrollmentNotAllowed(CourseEnrollmentException):
     pass
 
 
+class CourseEnrollmentQuerySet(models.QuerySet):
+    """
+    Custom queryset for CourseEnrollment with Table-level filter methods.
+    """
+
+    def active(self):
+        """
+        Returns a queryset of CourseEnrollment objects for courses that are currently active.
+        """
+        return self.filter(is_active=True)
+
+    def without_certificates(self, username):
+        """
+        Returns a queryset of CourseEnrollment objects for courses that do not have a certificate.
+        """
+        return self.exclude(course_id__in=self.get_user_course_ids_with_certificates(username))
+
+    def with_certificates(self, username):
+        """
+        Returns a queryset of CourseEnrollment objects for courses that have a certificate.
+        """
+        return self.filter(course_id__in=self.get_user_course_ids_with_certificates(username))
+
+    def in_progress(self, username, time_zone=ZoneInfo("UTC")):
+        """
+        Returns a queryset of CourseEnrollment objects for courses that are currently in progress.
+        """
+        now = datetime.now(time_zone)
+        return self.active().without_certificates(username).filter(
+            Q(course__start__lte=now, course__end__gte=now)
+            | Q(course__start__isnull=True, course__end__isnull=True)
+            | Q(course__start__isnull=True, course__end__gte=now)
+            | Q(course__start__lte=now, course__end__isnull=True),
+        )
+
+    def completed(self, username):
+        """
+        Returns a queryset of CourseEnrollment objects for courses that have been completed.
+        """
+        return self.active().with_certificates(username)
+
+    def expired(self, username, time_zone=ZoneInfo("UTC")):
+        """
+        Returns a queryset of CourseEnrollment objects for courses that have expired.
+        """
+        now = datetime.now(time_zone)
+        return self.active().without_certificates(username).filter(course__end__lt=now)
+
+    def get_user_course_ids_with_certificates(self, username):
+        """
+        Retrieve the list of course IDs for which the given user has earned certificates.
+        """
+        from lms.djangoapps.certificates.api import get_course_ids_from_certs_for_user
+        return get_course_ids_from_certs_for_user(username)
+
+
 class CourseEnrollmentManager(models.Manager):
     """
     Custom manager for CourseEnrollment with Table-level filter methods.
     """
+
+    def get_queryset(self):
+        return CourseEnrollmentQuerySet(self.model, using=self._db)
 
     def is_small_course(self, course_id):
         """
@@ -302,10 +361,8 @@ class CourseEnrollment(models.Model):
             "[CourseEnrollment] {}: {} ({}); active: ({})"
         ).format(self.user, self.course_id, self.created, self.is_active)
 
-    def save(self, force_insert=False, force_update=False, using=None, update_fields=None):
-        super().save(
-            force_insert=force_insert, force_update=force_update, using=using, update_fields=update_fields
-        )
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
 
         # Delete the cached status hash, forcing the value to be recalculated the next time it is needed.
         cache.delete(self.enrollment_status_hash_cache_key(self.user))
@@ -450,6 +507,7 @@ class CourseEnrollment(models.Model):
             )
 
             # .. event_implemented_name: COURSE_ENROLLMENT_CHANGED
+            # .. event_type: org.openedx.learning.course.enrollment.changed.v1
             COURSE_ENROLLMENT_CHANGED.send_event(
                 enrollment=CourseEnrollmentData(
                     user=UserData(
@@ -477,6 +535,7 @@ class CourseEnrollment(models.Model):
                 self.send_signal(EnrollStatusChange.unenroll)
 
                 # .. event_implemented_name: COURSE_UNENROLLMENT_COMPLETED
+                # .. event_type: org.openedx.learning.course.unenrollment.completed.v1
                 COURSE_UNENROLLMENT_COMPLETED.send_event(
                     enrollment=CourseEnrollmentData(
                         user=UserData(
@@ -655,6 +714,8 @@ class CourseEnrollment(models.Model):
         Also emits relevant events for analytics purposes.
         """
         try:
+            # .. filter_implemented_name: CourseEnrollmentStarted
+            # .. filter_type: org.openedx.learning.course.enrollment.started.v1
             user, course_key, mode = CourseEnrollmentStarted.run_filter(
                 user=user, course_key=course_key, mode=mode,
             )
@@ -713,6 +774,7 @@ class CourseEnrollment(models.Model):
         enrollment.send_signal(EnrollStatusChange.enroll)
 
         # .. event_implemented_name: COURSE_ENROLLMENT_CREATED
+        # .. event_type: org.openedx.learning.course.enrollment.created.v1
         COURSE_ENROLLMENT_CREATED.send_event(
             enrollment=CourseEnrollmentData(
                 user=UserData(
@@ -1025,7 +1087,7 @@ class CourseEnrollment(models.Model):
         if refund_cutoff_date is None:
             log.info("Refund cutoff date is null")
             return False
-        if datetime.now(UTC) > refund_cutoff_date:
+        if datetime.now(ZoneInfo("UTC")) > refund_cutoff_date:
             log.info(f"Refund cutoff date: {refund_cutoff_date} has passed")
             return False
 
@@ -1071,7 +1133,10 @@ class CourseEnrollment(models.Model):
             self.course_overview.start.replace(tzinfo=None)
         )
 
-        return refund_window_start_date.replace(tzinfo=UTC) + EnrollmentRefundConfiguration.current().refund_window
+        return (
+            refund_window_start_date.replace(tzinfo=ZoneInfo("UTC"))
+            + EnrollmentRefundConfiguration.current().refund_window
+        )
 
     def is_order_voucher_refundable(self):
         """ Checks if the coupon batch expiration date has passed to determine whether order voucher is refundable. """
@@ -1080,8 +1145,11 @@ class CourseEnrollment(models.Model):
         if not vouchers:
             return False
         voucher_end_datetime_str = vouchers[0]['end_datetime']
-        voucher_expiration_date = datetime.strptime(voucher_end_datetime_str, ECOMMERCE_DATE_FORMAT).replace(tzinfo=UTC)
-        return datetime.now(UTC) < voucher_expiration_date
+        voucher_expiration_date = (
+            datetime.strptime(voucher_end_datetime_str, ECOMMERCE_DATE_FORMAT)
+            .replace(tzinfo=ZoneInfo("UTC"))
+        )
+        return datetime.now(ZoneInfo("UTC")) < voucher_expiration_date
 
     def get_order_attribute_from_ecommerce(self, attribute_name):
         """
@@ -1203,7 +1271,7 @@ class CourseEnrollment(models.Model):
         if self.dynamic_upgrade_deadline is not None:
             # When course modes expire they aren't found any more and None would be returned.
             # Replicate that behavior here by returning None if the personalized deadline is in the past.
-            if self.dynamic_upgrade_deadline <= datetime.now(UTC):
+            if self.dynamic_upgrade_deadline <= datetime.now(ZoneInfo("UTC")):
                 log.debug('Schedules: Returning None since dynamic upgrade deadline has already passed.')
                 return None
 
@@ -1688,7 +1756,7 @@ class EnrollmentRefundConfiguration(ConfigurationModel):
 
 class BulkUnenrollConfiguration(ConfigurationModel):  # lint-amnesty, pylint: disable=empty-docstring
     """
-
+    .. no_pii:
     """
     csv_file = models.FileField(
         validators=[FileExtensionValidator(allowed_extensions=['csv'])],
@@ -1701,6 +1769,8 @@ class BulkUnenrollConfiguration(ConfigurationModel):  # lint-amnesty, pylint: di
 class BulkChangeEnrollmentConfiguration(ConfigurationModel):
     """
     config model for the bulk_change_enrollment_csv command
+
+    .. no_pii:
     """
     csv_file = models.FileField(
         validators=[FileExtensionValidator(allowed_extensions=['csv'])],

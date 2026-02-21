@@ -26,6 +26,27 @@ var defineFooter = new RegExp('(' + defineCallFooter.source + ')|('
 var staticRootLms = process.env.STATIC_ROOT_LMS || './test_root/staticfiles';
 var staticRootCms = process.env.STATIC_ROOT_CMS || (staticRootLms + '/studio');
 
+class DieHardPlugin {
+  /* A small plugin which ensures that if Webpack fails, it causes the surrounding process to fail
+   * as well. This helps us prevent JavaScript CI from "false passing" upon build failures--that is,
+   * we want to avoid having another situation where the Webpack build breaks under Karma (our
+   * test runner) but Karma just lets it slide and moves on to the next test suite.
+   *
+   * One would imagine that this would be Webpack's default behavior (and maybe it is?) but,
+   * regardless, karma-webpack does not seem to consider Webpack build failures to be fatal errors
+   * without this plugin. We don't fully understand it, but this is good enough given that we plan
+   * to remove all JS in this repo soon (https://github.com/openedx/edx-platform/issues/31620).
+   *
+   * Inpsired by: https://github.com/codymikol/karma-webpack/issues/49#issuecomment-842682050
+   */
+  apply(compiler) {
+    compiler.hooks.failed.tap('DieHardPlugin', (error) => {
+      console.error(error);
+      process.exit(1);
+    });
+  }
+}
+
 var workerConfig = function() {
     try {
         return {
@@ -46,6 +67,8 @@ var workerConfig = function() {
                     }),
                     new webpack.DefinePlugin({
                         'process.env.JS_ENV_EXTRA_CONFIG': JSON.parse(process.env.JS_ENV_EXTRA_CONFIG),
+                        'CAPTIONS_CONTENT_TO_REPLACE': JSON.stringify(process.env.CAPTIONS_CONTENT_TO_REPLACE || ''),
+                        'CAPTIONS_CONTENT_REPLACEMENT': JSON.stringify(process.env.CAPTIONS_CONTENT_REPLACEMENT || '')
                     })
                 ],
                 module: {
@@ -65,11 +88,11 @@ var workerConfig = function() {
             }
         };
     } catch (err) {
-        return null;
+        return {};
     }
 };
 
-module.exports = Merge.smart({
+module.exports = Merge.merge({
     web: {
         context: __dirname,
 
@@ -77,12 +100,10 @@ module.exports = Merge.smart({
             // Studio
             Import: './cms/static/js/features/import/factories/import.js',
             CourseOrLibraryListing: './cms/static/js/features_jsx/studio/CourseOrLibraryListing.jsx',
-            'js/factories/textbooks': './cms/static/js/factories/textbooks.js',
             'js/factories/container': './cms/static/js/factories/container.js',
             'js/factories/context_course': './cms/static/js/factories/context_course.js',
             'js/factories/library': './cms/static/js/factories/library.js',
             'js/factories/xblock_validation': './cms/static/js/factories/xblock_validation.js',
-            'js/factories/edit_tabs': './cms/static/js/factories/edit_tabs.js',
             'js/sock': './cms/static/js/sock.js',
             'js/factories/tag_count': './cms/static/js/factories/tag_count.js',
 
@@ -98,9 +119,6 @@ module.exports = Merge.smart({
             StudentAccountDeletion: './lms/static/js/student_account/components/StudentAccountDeletion.jsx',
             StudentAccountDeletionInitializer: './lms/static/js/student_account/StudentAccountDeletionInitializer.js',
             ProblemBrowser: './lms/djangoapps/instructor/static/instructor/ProblemBrowser/index.jsx',
-            DemographicsCollectionBanner: './lms/static/js/demographics_collection/DemographicsCollectionBanner.jsx',
-            DemographicsCollectionModal: './lms/static/js/demographics_collection/DemographicsCollectionModal.jsx',
-            AxiosJwtTokenService: './lms/static/js/jwt_auth/AxiosJwtTokenService.js',
             EnterpriseLearnerPortalModal: './lms/static/js/learner_dashboard/EnterpriseLearnerPortalModal.jsx',
 
             // Learner Dashboard
@@ -112,10 +130,8 @@ module.exports = Merge.smart({
             CompletionOnViewService: './lms/static/completion/js/CompletionOnViewService.js',
 
             // Features
-            CourseSock: './openedx/features/course_experience/static/course_experience/js/CourseSock.js',
             Currency: './openedx/features/course_experience/static/course_experience/js/currency.js',
 
-            AnnouncementsView: './openedx/features/announcements/static/announcements/jsx/Announcements.jsx',
             CookiePolicyBanner: './common/static/js/src/CookiePolicyBanner.jsx',
 
             // Common
@@ -157,6 +173,7 @@ module.exports = Merge.smart({
                 // any other way to declare that dependency.
                 $script: 'scriptjs'
             }),
+            new DieHardPlugin(),
         ],
 
         module: {
@@ -175,19 +192,19 @@ module.exports = Merge.smart({
                         multiple: [
                             { search: defineHeader, replace: '' },
                             { search: defineFooter, replace: '' },
-                            { 
+                            {
                                 search: /(\/\* RequireJS) \*\//g,
                                 replace(match, p1, offset, string) {
                                     return p1;
                                 }
                             },
-                            { 
+                            {
                                 search: /\/\* Webpack/g,
                                 replace(match, p1, offset, string) {
                                     return match + ' */';
                                 }
                             },
-                            { 
+                            {
                                 search: /text!(.*?\.underscore)/g,
                                 replace(match, p1, offset, string) {
                                     return p1;
@@ -485,15 +502,6 @@ module.exports = Merge.smart({
                         }
                     ]
                 },
-                {
-                    test: /xmodule\/js\/src\/video\/10_main.js/,
-                    use: [
-                        {
-                            loader: 'imports-loader',
-                            options: 'this=>window'
-                        }
-                    ]
-                },
                 /*
                  * END BUILT-IN XBLOCK ASSETS WITH GLOBAL DEFINITIONS
                  ***************************************************************************************************** */
@@ -638,13 +646,13 @@ module.exports = Merge.smart({
             // We used to have node: { fs: 'empty' } in this file,
             // that is no longer supported. Adding this based on the recommendation in
             // https://stackoverflow.com/questions/64361940/webpack-error-configuration-node-has-an-unknown-property-fs
-            // 
+            //
             // With this uncommented tests fail
             // Tests failed in the following suites:
             // * lms javascript
             // * xmodule-webpack javascript
             // Error: define cannot be used indirect
-            // 
+            //
             // fallback: {
             //     fs: false
             // }
@@ -660,9 +668,11 @@ module.exports = Merge.smart({
             $: 'jQuery',
             backbone: 'Backbone',
             canvas: 'canvas',
+            fs: 'fs',
             gettext: 'gettext',
             jquery: 'jQuery',
             logger: 'Logger',
+            path: 'path',
             underscore: '_',
             URI: 'URI',
             XBlockToXModuleShim: 'XBlockToXModuleShim',

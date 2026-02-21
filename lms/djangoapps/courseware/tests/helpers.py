@@ -3,14 +3,11 @@ Helpers for courseware tests.
 """
 
 
-import ast
-import re
 import json
 from collections import OrderedDict
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.models import User  # lint-amnesty, pylint: disable=imported-auth-user
 from django.test import TestCase
@@ -20,7 +17,6 @@ from django.utils.timezone import now
 from xblock.field_data import DictFieldData
 
 from common.djangoapps.edxmako.shortcuts import render_to_string
-from lms.djangoapps.courseware import access_utils
 from lms.djangoapps.courseware.access import has_access
 from lms.djangoapps.courseware.utils import verified_upgrade_deadline_link
 from lms.djangoapps.courseware.masquerade import MasqueradeView
@@ -68,7 +64,7 @@ class BaseTestXmodule(ModuleStoreTestCase):
 
     def new_module_runtime(self, runtime=None, **kwargs):
         """
-        Generate a new DescriptorSystem that is minimally set up for testing
+        Generate a new ModuleStoreRuntime that is minimally set up for testing
         """
         if runtime:
             return prepare_block_runtime(runtime, course_id=self.course.id, **kwargs)
@@ -140,11 +136,11 @@ class BaseTestXmodule(ModuleStoreTestCase):
         self.setup_course()
         self.initialize_module(metadata=self.METADATA, data=self.DATA)
 
-    def get_url(self, dispatch):
+    def get_url(self, dispatch, handler_name='xmodule_handler'):
         """Return item url with dispatch."""
         return reverse(
             'xblock_handler',
-            args=(str(self.course.id), quote_slashes(self.item_url), 'xmodule_handler', dispatch)
+            args=(str(self.course.id), quote_slashes(self.item_url), handler_name, dispatch)
         )
 
 
@@ -446,25 +442,27 @@ def get_expiration_banner_text(user, course, language='en'):  # lint-amnesty, py
     return bannerText
 
 
-def get_context_dict_from_string(data):
+def get_context_from_dict(data):
     """
-    Retrieve dictionary from string.
+     Retrieve validated dictionary from template's contextual data.
+
+    Args:
+        data: The context dictionary to validate
+
+    Returns:
+        dict: context dictionary
     """
-    # Replace tuple and un-necessary info from inside string and get the dictionary.
-    cleaned_data = data.split('((\'video.html\',')[1].replace("),\n {})", '').strip()
+    # Make a copy to avoid modifying the original dict
+    validated_data = data.copy()
+
     # Omit user_id validation
-    cleaned_data_without_user = re.sub(".*user_id.*\n?", '', cleaned_data)
+    validated_data.pop('user_id', None)
 
-    validated_data = ast.literal_eval(cleaned_data_without_user)
-    validated_data['metadata'] = OrderedDict(
-        sorted(json.loads(validated_data['metadata']).items(), key=lambda t: t[0])
-    )
+    # Handle metadata field - parse and sort to ensure consistent ordering
+    if 'metadata' in validated_data and validated_data['metadata'] is not None:
+        metadata_dict = json.loads(validated_data['metadata'])
+        validated_data['metadata'] = OrderedDict(
+            sorted(metadata_dict.items(), key=lambda t: t[0])
+        )
+
     return validated_data
-
-
-def set_preview_mode(preview_mode: bool):
-    """
-    A decorator to force the preview mode on or off.
-    """
-    hostname = settings.FEATURES.get('PREVIEW_LMS_BASE') if preview_mode else None
-    return patch.object(access_utils, 'get_current_request_hostname', new=lambda: hostname)

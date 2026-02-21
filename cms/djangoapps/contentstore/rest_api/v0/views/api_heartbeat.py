@@ -5,7 +5,6 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework import status
 from openedx.core.lib.api.view_utils import DeveloperErrorViewMixin, view_auth_classes
-import cms.djangoapps.contentstore.toggles as toggles
 
 
 class APIHeartBeatView(DeveloperErrorViewMixin, APIView):
@@ -33,16 +32,14 @@ class APIHeartBeatView(DeveloperErrorViewMixin, APIView):
         **Response Values**
 
         If the request is successful, an HTTP 200 "OK" response is returned.
-        The HTTP 200 response contains a single dict with the  "authoring_api_enabled" value "True".
+        The HTTP 200 response contains a single dict with the  "content_api_enabled" value "True".
 
         **Example Response**
 
         ```json
         {
-            "authoring_api_enabled": "True"
+            "content_api_enabled": "True"
         }
         ```
         """
-        if toggles.use_studio_content_api():
-            return Response({'status': 'heartbeat successful'}, status=status.HTTP_200_OK)
-        return Response(status=status.HTTP_403_FORBIDDEN)
+        return Response({'status': 'heartbeat successful'}, status=status.HTTP_200_OK)

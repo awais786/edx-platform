@@ -6,9 +6,9 @@ import logging
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import ddt
-import pytz
 from config_models.models import cache
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser, User  # lint-amnesty, pylint: disable=imported-auth-user
@@ -47,10 +47,11 @@ from openedx.core.djangoapps.content.course_overviews.tests.factories import Cou
 from openedx.core.djangoapps.programs.tests.mixins import ProgramsApiConfigMixin
 from openedx.core.djangoapps.site_configuration.tests.mixins import SiteMixin
 from openedx.core.djangolib.testing.utils import CacheIsolationTestCase, skip_unless_lms
+from openedx.features.course_experience.url_helpers import make_learning_mfe_courseware_url
 from xmodule.modulestore.tests.django_utils import ModuleStoreTestCase, SharedModuleStoreTestCase  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.modulestore.tests.factories import CourseFactory, check_mongo_calls  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.data import CertificatesDisplayBehaviors  # lint-amnesty, pylint: disable=wrong-import-order
-
+from openedx.core.djangoapps.site_configuration.tests.test_util import with_site_configuration_context
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ class CourseEndingTest(ModuleStoreTestCase):
         course = CourseOverviewFactory.create(
             end_of_course_survey_url=survey_url,
             certificates_display_behavior=CertificatesDisplayBehaviors.END,
-            end=datetime.now(pytz.UTC) - timedelta(days=2)
+            end=datetime.now(ZoneInfo("UTC")) - timedelta(days=2)
         )
         cert = GeneratedCertificateFactory.create(
             user=user,
@@ -91,85 +92,132 @@ class CourseEndingTest(ModuleStoreTestCase):
             download_url='http://s3.edx/cert'
         )
         enrollment = CourseEnrollmentFactory(user=user, course_id=course.id, mode=CourseMode.VERIFIED)
-
-        assert _cert_info(user, enrollment, None) ==\
-               {'status': 'processing', 'show_survey_button': False, 'can_unenroll': True}
-
-        cert_status = {'status': 'unavailable', 'mode': 'honor', 'uuid': None}
-        assert _cert_info(user, enrollment, cert_status) == {'status': 'processing', 'show_survey_button': False,
-                                                             'mode': 'honor', 'linked_in_url': None,
-                                                             'can_unenroll': True}
-
-        cert_status = {'status': 'generating', 'grade': '0.67', 'mode': 'honor', 'uuid': None}
-        with patch('lms.djangoapps.grades.course_grade_factory.CourseGradeFactory.read') as patch_persisted_grade:
-            patch_persisted_grade.return_value = Mock(percent=1.0)
-            assert _cert_info(user, enrollment, cert_status) == {'status': 'generating', 'show_survey_button': True,
-                                                                 'survey_url': survey_url, 'grade': '1.0',
-                                                                 'mode': 'honor', 'linked_in_url': None,
-                                                                 'can_unenroll': False}
-
-        cert_status = {'status': 'generating', 'grade': '0.67', 'mode': 'honor', 'uuid': None}
-        assert _cert_info(user, enrollment, cert_status) == {'status': 'generating', 'show_survey_button': True,
-                                                             'survey_url': survey_url, 'grade': '0.67', 'mode': 'honor',
-                                                             'linked_in_url': None, 'can_unenroll': False}
-
-        cert_status = {
-            'status': 'downloadable',
-            'grade': '0.67',
-            'download_url': cert.download_url,
-            'mode': 'honor',
-            'uuid': 'fakeuuidbutitsfine',
+        # LinkedIn sharing disabled as we are expecting 'linked_in_url': None in our test case
+        SITE_CONFIGURATION = {
+            'SOCIAL_SHARING_SETTINGS': {
+                'CERTIFICATE_LINKEDIN': False
+            }
         }
-        assert _cert_info(user, enrollment, cert_status) == {'status': 'downloadable',
-                                                             'download_url': cert.download_url,
-                                                             'show_survey_button': True, 'survey_url': survey_url,
-                                                             'grade': '0.67', 'mode': 'honor', 'linked_in_url': None,
-                                                             'can_unenroll': False}
+        with with_site_configuration_context(configuration=SITE_CONFIGURATION):
+            assert _cert_info(user, enrollment, None) == {
+                'status': 'processing',
+                'show_survey_button': False,
+                'can_unenroll': True,
+            }
 
-        cert_status = {
-            'status': 'notpassing', 'grade': '0.67',
-            'download_url': cert.download_url,
-            'mode': 'honor',
-            'uuid': 'fakeuuidbutitsfine',
-        }
-        assert _cert_info(user, enrollment, cert_status) == {'status': 'notpassing', 'show_survey_button': True,
-                                                             'survey_url': survey_url, 'grade': '0.67', 'mode': 'honor',
-                                                             'linked_in_url': None, 'can_unenroll': True}
+            cert_status = {'status': 'unavailable', 'mode': 'honor', 'uuid': None}
+            assert _cert_info(user, enrollment, cert_status) == {
+                'status': 'processing',
+                'show_survey_button': False,
+                'mode': 'honor',
+                'linked_in_url': None,
+                'can_unenroll': True,
+            }
 
-        # Test a course that doesn't have a survey specified
-        course2 = CourseOverviewFactory.create(
-            end_of_course_survey_url=None,
-            certificates_display_behavior='end',
-        )
-        enrollment2 = CourseEnrollmentFactory(user=user, course_id=course2.id, mode=CourseMode.VERIFIED)
+            cert_status = {'status': 'generating', 'grade': '0.67', 'mode': 'honor', 'uuid': None}
+            with patch('lms.djangoapps.grades.course_grade_factory.CourseGradeFactory.read') as patch_persisted_grade:
+                patch_persisted_grade.return_value = Mock(percent=1.0)
+                assert _cert_info(user, enrollment, cert_status) == {
+                    'status': 'generating',
+                    'show_survey_button': True,
+                    'survey_url': survey_url,
+                    'grade': '1.0',
+                    'mode': 'honor',
+                    'linked_in_url': None,
+                    'can_unenroll': False,
+                }
 
-        cert_status = {
-            'status': 'notpassing', 'grade': '0.67',
-            'download_url': cert.download_url, 'mode': 'honor', 'uuid': 'fakeuuidbutitsfine'
-        }
-        assert _cert_info(user, enrollment2, cert_status) == {'status': 'notpassing', 'show_survey_button': False,
-                                                              'grade': '0.67', 'mode': 'honor', 'linked_in_url': None,
-                                                              'can_unenroll': True}
+            cert_status = {'status': 'generating', 'grade': '0.67', 'mode': 'honor', 'uuid': None}
+            assert _cert_info(user, enrollment, cert_status) == {
+                'status': 'generating',
+                'show_survey_button': True,
+                'survey_url': survey_url,
+                'grade': '0.67',
+                'mode': 'honor',
+                'linked_in_url': None,
+                'can_unenroll': False,
+            }
 
-        course3 = CourseOverviewFactory.create(
-            end_of_course_survey_url=None,
-            certificates_display_behavior='early_no_info',
-        )
-        enrollment3 = CourseEnrollmentFactory(user=user, course_id=course3.id, mode=CourseMode.VERIFIED)
-        # test when the display is unavailable or notpassing, we get the correct results out
-        course2.certificates_display_behavior = CertificatesDisplayBehaviors.EARLY_NO_INFO
-        cert_status = {'status': 'unavailable', 'mode': 'honor', 'uuid': None}
-        assert _cert_info(user, enrollment3, cert_status) == {'status': 'processing', 'show_survey_button': False,
-                                                              'can_unenroll': True}
+            cert_status = {
+                'status': 'downloadable',
+                'grade': '0.67',
+                'download_url': cert.download_url,
+                'mode': 'honor',
+                'uuid': 'fakeuuidbutitsfine',
+            }
+            assert _cert_info(user, enrollment, cert_status) == {
+                'status': 'downloadable',
+                'download_url': cert.download_url,
+                'show_survey_button': True,
+                'survey_url': survey_url,
+                'grade': '0.67',
+                'mode': 'honor',
+                'linked_in_url': None,
+                'can_unenroll': False,
+            }
 
-        cert_status = {
-            'status': 'notpassing', 'grade': '0.67',
-            'download_url': cert.download_url,
-            'mode': 'honor',
-            'uuid': 'fakeuuidbutitsfine'
-        }
-        assert _cert_info(user, enrollment3, cert_status) == {'status': 'processing', 'show_survey_button': False,
-                                                              'can_unenroll': True}
+            cert_status = {
+                'status': 'notpassing',
+                'grade': '0.67',
+                'download_url': cert.download_url,
+                'mode': 'honor',
+                'uuid': 'fakeuuidbutitsfine',
+            }
+            assert _cert_info(user, enrollment, cert_status) == {
+                'status': 'notpassing',
+                'show_survey_button': True,
+                'survey_url': survey_url,
+                'grade': '0.67',
+                'mode': 'honor',
+                'linked_in_url': None,
+                'can_unenroll': True,
+            }
+
+            # Test a course that doesn't have a survey specified
+            course2 = CourseOverviewFactory.create(
+                end_of_course_survey_url=None,
+                certificates_display_behavior='end',
+            )
+            enrollment2 = CourseEnrollmentFactory(user=user, course_id=course2.id, mode=CourseMode.VERIFIED)
+
+            cert_status = {
+                'status': 'notpassing', 'grade': '0.67',
+                'download_url': cert.download_url, 'mode': 'honor', 'uuid': 'fakeuuidbutitsfine'
+            }
+            assert _cert_info(user, enrollment2, cert_status) == {
+                'status': 'notpassing',
+                'show_survey_button': False,
+                'grade': '0.67',
+                'mode': 'honor',
+                'linked_in_url': None,
+                'can_unenroll': True
+            }
+
+            course3 = CourseOverviewFactory.create(
+                end_of_course_survey_url=None,
+                certificates_display_behavior='early_no_info',
+            )
+            enrollment3 = CourseEnrollmentFactory(user=user, course_id=course3.id, mode=CourseMode.VERIFIED)
+            # test when the display is unavailable or notpassing, we get the correct results out
+            course2.certificates_display_behavior = CertificatesDisplayBehaviors.EARLY_NO_INFO
+            cert_status = {'status': 'unavailable', 'mode': 'honor', 'uuid': None}
+            assert _cert_info(user, enrollment3, cert_status) == {
+                'status': 'processing',
+                'show_survey_button': False,
+                'can_unenroll': True
+            }
+
+            cert_status = {
+                'status': 'notpassing', 'grade': '0.67',
+                'download_url': cert.download_url,
+                'mode': 'honor',
+                'uuid': 'fakeuuidbutitsfine'
+            }
+            assert _cert_info(user, enrollment3, cert_status) == {
+                'status': 'processing',
+                'show_survey_button': False,
+                'can_unenroll': True
+            }
 
     def test_cert_info_beta_tester(self):
         user = UserFactory.create()
@@ -193,15 +241,22 @@ class CourseEndingTest(ModuleStoreTestCase):
             'uuid': 'blah',
         }
         with patch(BETA_TESTER_METHOD, return_value=False):
-            assert _cert_info(user, enrollment, cert_status) == {
-                'status': status,
-                'download_url': cert.download_url,
-                'show_survey_button': False,
-                'grade': grade,
-                'mode': mode,
-                'linked_in_url': None,
-                'can_unenroll': False
+            # LinkedIn sharing disabled as we are expecting 'linked_in_url': None in our test case
+            SITE_CONFIGURATION = {
+                'SOCIAL_SHARING_SETTINGS': {
+                    'CERTIFICATE_LINKEDIN': False
+                }
             }
+            with with_site_configuration_context(configuration=SITE_CONFIGURATION):
+                assert _cert_info(user, enrollment, cert_status) == {
+                    'status': status,
+                    'download_url': cert.download_url,
+                    'show_survey_button': False,
+                    'grade': grade,
+                    'mode': mode,
+                    'linked_in_url': None,
+                    'can_unenroll': False
+                }
 
         with patch(BETA_TESTER_METHOD, return_value=True):
             assert _cert_info(user, enrollment, cert_status) == {
@@ -232,7 +287,7 @@ class CourseEndingTest(ModuleStoreTestCase):
         course = CourseOverviewFactory.create(
             end_of_course_survey_url=survey_url,
             certificates_display_behavior=CertificatesDisplayBehaviors.END,
-            end=datetime.now(pytz.UTC) - timedelta(days=2),
+            end=datetime.now(ZoneInfo("UTC")) - timedelta(days=2),
         )
         enrollment = CourseEnrollmentFactory(user=user, course_id=course.id, mode=CourseMode.VERIFIED)
 
@@ -259,7 +314,7 @@ class CourseEndingTest(ModuleStoreTestCase):
         course = CourseOverviewFactory.create(
             end_of_course_survey_url=survey_url,
             certificates_display_behavior=CertificatesDisplayBehaviors.END,
-            end=datetime.now(pytz.UTC) - timedelta(days=2),
+            end=datetime.now(ZoneInfo("UTC")) - timedelta(days=2),
         )
         cert_status = {'status': 'generating', 'mode': 'honor', 'uuid': None}
         enrollment = CourseEnrollmentFactory(user=user, course_id=course.id, mode=CourseMode.VERIFIED)
@@ -357,14 +412,14 @@ class DashboardTest(ModuleStoreTestCase, TestVerificationBase):
             course_id=self.course.id,
             mode_slug='verified',
             mode_display_name='Verified',
-            expiration_datetime=datetime.now(pytz.UTC) + timedelta(days=1)
+            expiration_datetime=datetime.now(ZoneInfo("UTC")) + timedelta(days=1)
         )
         enrollment = CourseEnrollment.enroll(self.user, self.course.id)
         course_mode_info = complete_course_mode_info(self.course.id, enrollment)
         assert course_mode_info['show_upsell']
         assert course_mode_info['days_for_upsell'] == 1
 
-        verified_mode.expiration_datetime = datetime.now(pytz.UTC) + timedelta(days=-1)
+        verified_mode.expiration_datetime = datetime.now(ZoneInfo("UTC")) + timedelta(days=-1)
         verified_mode.save()
         course_mode_info = complete_course_mode_info(self.course.id, enrollment)
         assert not course_mode_info['show_upsell']
@@ -379,13 +434,13 @@ class DashboardTest(ModuleStoreTestCase, TestVerificationBase):
             course_id=self.course.id,
             mode_slug='verified',
             mode_display_name='verified',
-            expiration_datetime=datetime.now(pytz.UTC) - timedelta(days=1)
+            expiration_datetime=datetime.now(ZoneInfo("UTC")) - timedelta(days=1)
         )
 
         CourseEnrollment.enroll(self.user, self.course.id, mode='honor')
 
-        self.course.start = datetime.now(pytz.UTC) - timedelta(days=2)
-        self.course.end = datetime.now(pytz.UTC) - timedelta(days=1)
+        self.course.start = datetime.now(ZoneInfo("UTC")) - timedelta(days=2)
+        self.course.end = datetime.now(ZoneInfo("UTC")) - timedelta(days=1)
         self.course.display_name = "Omega"
         self.course = self.update_course(self.course, self.user.id)
 
@@ -398,7 +453,16 @@ class DashboardTest(ModuleStoreTestCase, TestVerificationBase):
             grade='67',
             download_url=download_url
         )
-        response = self.client.get(reverse('dashboard'))
+        # LinkedIn sharing disabled
+        # When CERTIFICATE_LINKEDIN is set to False in site configuration,
+        # the LinkedIn "Add to Profile" button should not be visible to users
+        SITE_CONFIGURATION = {
+            'SOCIAL_SHARING_SETTINGS': {
+                'CERTIFICATE_LINKEDIN': False
+            }
+        }
+        with with_site_configuration_context(configuration=SITE_CONFIGURATION):
+            response = self.client.get(reverse('dashboard'))
 
         assert response.status_code == 200
         self.assertNotContains(response, 'Add Certificate to LinkedIn')
@@ -418,13 +482,14 @@ class DashboardTest(ModuleStoreTestCase, TestVerificationBase):
             course_id=self.course.id,
             mode_slug='verified',
             mode_display_name='verified',
-            expiration_datetime=datetime.now(pytz.UTC) - timedelta(days=1)
+            expiration_datetime=datetime.now(ZoneInfo("UTC")) - timedelta(days=1)
         )
         CourseEnrollment.enroll(self.user, self.course.id, mode='honor')
-        self.course.certificate_available_date = datetime.now(pytz.UTC) - timedelta(days=1)
-        self.course.start = datetime.now(pytz.UTC) - timedelta(days=2)
-        self.course.end = datetime.now(pytz.UTC) - timedelta(days=1)
+        self.course.certificate_available_date = datetime.now(ZoneInfo("UTC")) - timedelta(days=1)
+        self.course.start = datetime.now(ZoneInfo("UTC")) - timedelta(days=2)
+        self.course.end = datetime.now(ZoneInfo("UTC")) - timedelta(days=1)
         self.course.display_name = 'Omega'
+        self.course.course_organization = 'Omega Org'
         self.course = self.update_course(self.course, self.user.id)
 
         cert = GeneratedCertificateFactory.create(
@@ -435,33 +500,33 @@ class DashboardTest(ModuleStoreTestCase, TestVerificationBase):
             grade='67',
             download_url='https://www.edx.org'
         )
-        response = self.client.get(reverse('dashboard'))
+        # LinkedIn sharing disabled
+        # When CERTIFICATE_LINKEDIN is set to False in site configuration,
+        # the LinkedIn "Add to Profile" button should not be visible to users
+        SITE_CONFIGURATION = {
+            'SOCIAL_SHARING_SETTINGS': {
+                'CERTIFICATE_LINKEDIN': True
+            }
+        }
+        with with_site_configuration_context(configuration=SITE_CONFIGURATION):
+            response = self.client.get(reverse('dashboard'))
 
         assert response.status_code == 200
         self.assertContains(response, 'Add Certificate to LinkedIn')
 
-        # We can switch to this and the commented out assertContains once edx-platform reaches Python 3.8
-        # expected_url = (
-        #     'https://www.linkedin.com/profile/add?startTask=CERTIFICATION_NAME&'
-        #     'name={platform}+Honor+Code+Certificate+for+Omega&certUrl={cert_url}&'
-        #     'organizationId={company_identifier}'
-        # ).format(
-        #     platform=quote(settings.PLATFORM_NAME.encode('utf-8')),
-        #     cert_url=quote(cert.download_url, safe=''),
-        #     company_identifier=linkedin_config.company_identifier,
-        # )
+        expected_url = (
+            'https://www.linkedin.com/profile/add?startTask=CERTIFICATION_NAME&'
+            'name={platform}+Honor+Code+Certificate+for+Omega&'
+            'certUrl={cert_url}&'
+            'organizationId={company_identifier}'
+        ).format(
+            platform=quote(settings.PLATFORM_NAME.encode('utf-8')),
+            cert_url=quote(cert.download_url, safe=''),
+            company_identifier=linkedin_config.company_identifier,
+        )
 
-        # self.assertContains(response, escape(expected_url))
-
-        # These can be removed (in favor of the above) once we are on Python 3.8. Fails in 3.5 because of dict ordering
-        self.assertContains(response, escape('https://www.linkedin.com/profile/add?startTask=CERTIFICATION_NAME'))
-        self.assertContains(response, escape('&name={platform}+Honor+Code+Certificate+for+Omega'.format(
-            platform=quote(settings.PLATFORM_NAME.encode('utf-8'))
-        )))
-        self.assertContains(response, escape('&certUrl={cert_url}'.format(cert_url=quote(cert.download_url, safe=''))))
-        self.assertContains(response, escape('&organizationId={company_identifier}'.format(
-            company_identifier=linkedin_config.company_identifier
-        )))
+        # Single assertion for the expected LinkedIn URL
+        self.assertContains(response, escape(expected_url))
 
     @skip_unless_lms
     def test_dashboard_metadata_caching(self):
@@ -528,7 +593,7 @@ class DashboardTest(ModuleStoreTestCase, TestVerificationBase):
             course_id=self.course.id,
             mode_slug='verified',
             mode_display_name='Verified',
-            expiration_datetime=datetime.now(pytz.UTC) + timedelta(days=1)
+            expiration_datetime=datetime.now(ZoneInfo("UTC")) + timedelta(days=1)
         )
         enrollment = CourseEnrollment.enroll(self.user, self.course.id, mode=enrollment_mode)
         return complete_course_mode_info(self.course.id, enrollment)
@@ -916,15 +981,15 @@ class ChangeEnrollmentViewTest(ModuleStoreTestCase):
         )
         return response
 
-    @ddt.data(
-        (True, 'courseware'),
-        (False, None),
-    )
-    @ddt.unpack
-    def test_enrollment_url(self, waffle_flag_enabled, returned_view):
-        with override_waffle_switch(REDIRECT_TO_COURSEWARE_AFTER_ENROLLMENT, waffle_flag_enabled):
+    def test_enrollment_url_without_redirect(self):
+        with override_waffle_switch(REDIRECT_TO_COURSEWARE_AFTER_ENROLLMENT, False):
             response = self._enroll_through_view(self.course)
-        data = reverse(returned_view, args=[str(self.course.id)]) if returned_view else ''
+        assert response.content.decode('utf8') == ''
+
+    def test_enrollment_with_redirect(self):
+        with override_waffle_switch(REDIRECT_TO_COURSEWARE_AFTER_ENROLLMENT, True):
+            response = self._enroll_through_view(self.course)
+        data = make_learning_mfe_courseware_url(self.course.id)
         assert response.content.decode('utf8') == data
 
     def test_enroll_as_default(self):

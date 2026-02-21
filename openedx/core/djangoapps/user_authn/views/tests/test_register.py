@@ -2,8 +2,8 @@
 
 import json
 from datetime import datetime
-from unittest import skipIf, skipUnless
-from unittest import mock
+from unittest import mock, skipIf, skipUnless
+from unittest.mock import patch
 
 import ddt
 import httpretty
@@ -15,11 +15,26 @@ from django.test import TransactionTestCase
 from django.test.client import RequestFactory
 from django.test.utils import override_settings
 from django.urls import reverse
-from pytz import UTC
+from openedx_events.tests.utils import OpenEdxEventsTestMixin
+from zoneinfo import ZoneInfo
 from social_django.models import Partial, UserSocialAuth
 from testfixtures import LogCapture
-from openedx_events.tests.utils import OpenEdxEventsTestMixin
 
+from common.djangoapps.student.helpers import authenticate_new_user
+from common.djangoapps.student.tests.factories import AccountRecoveryFactory, UserFactory
+from common.djangoapps.third_party_auth.tests.testutil import ThirdPartyAuthTestMixin, simulate_running_pipeline
+from common.djangoapps.third_party_auth.tests.utils import (
+    ThirdPartyOAuthTestMixin,
+    ThirdPartyOAuthTestMixinFacebook,
+    ThirdPartyOAuthTestMixinGoogle
+)
+from common.djangoapps.util.password_policy_validators import (
+    DEFAULT_MAX_PASSWORD_LENGTH,
+    create_validator_config,
+    password_validators_instruction_texts,
+    password_validators_restrictions
+)
+from openedx.core.djangoapps.embargo.models import Country, GlobalRestrictedCountry
 from openedx.core.djangoapps.site_configuration.helpers import get_value
 from openedx.core.djangoapps.site_configuration.tests.test_util import with_site_configuration
 from openedx.core.djangoapps.user_api.accounts import (
@@ -51,20 +66,7 @@ from openedx.core.djangoapps.user_api.tests.test_helpers import TestCaseForm
 from openedx.core.djangoapps.user_api.tests.test_views import UserAPITestCase
 from openedx.core.djangolib.testing.utils import CacheIsolationTestCase, skip_unless_lms
 from openedx.core.lib.api import test_utils
-from common.djangoapps.student.helpers import authenticate_new_user
-from common.djangoapps.student.tests.factories import AccountRecoveryFactory, UserFactory
-from common.djangoapps.third_party_auth.tests.testutil import ThirdPartyAuthTestMixin, simulate_running_pipeline
-from common.djangoapps.third_party_auth.tests.utils import (
-    ThirdPartyOAuthTestMixin,
-    ThirdPartyOAuthTestMixinFacebook,
-    ThirdPartyOAuthTestMixinGoogle
-)
-from common.djangoapps.util.password_policy_validators import (
-    DEFAULT_MAX_PASSWORD_LENGTH,
-    create_validator_config,
-    password_validators_instruction_texts,
-    password_validators_restrictions
-)
+
 ENABLE_AUTO_GENERATED_USERNAME = settings.FEATURES.copy()
 ENABLE_AUTO_GENERATED_USERNAME['ENABLE_AUTO_GENERATED_USERNAME'] = True
 
@@ -311,6 +313,30 @@ class RegistrationViewValidationErrorTest(
             response_json,
             {
                 "name": [{"user_message": 'Enter a valid name'}],
+                "error_code": "validation-error"
+            }
+        )
+
+    def test_register_fullname_max_lenghth_validation_error(self):
+        """
+        Full name error detection test if the length exceeds 255 characters.
+        """
+        expected_error_message = f"Your legal name is too long. It must not exceed {NAME_MAX_LENGTH} characters"
+
+        response = self.client.post(self.url, {
+            "email": self.EMAIL,
+            "name": "x" * 256,
+            "username": self.USERNAME,
+            "password": self.PASSWORD,
+            "honor_code": "true",
+        })
+        assert response.status_code == 400
+
+        response_json = json.loads(response.content.decode('utf-8'))
+        self.assertDictEqual(
+            response_json,
+            {
+                "name": [{"user_message": expected_error_message}],
                 "error_code": "validation-error"
             }
         )
@@ -923,7 +949,7 @@ class RegistrationViewTestV1(
         )
 
     def test_register_form_year_of_birth(self):
-        this_year = datetime.now(UTC).year
+        this_year = datetime.now(ZoneInfo("UTC")).year
         year_options = (
             [
                 {
@@ -1556,7 +1582,7 @@ class RegistrationViewTestV1(
         assert len(mail.outbox) == 1
         sent_email = mail.outbox[0]
         assert sent_email.to == [self.EMAIL]
-        assert sent_email.subject ==\
+        assert sent_email.subject == \
                f'Action Required: Activate your {settings.PLATFORM_NAME} account'
         assert f'high-quality {settings.PLATFORM_NAME} courses' in sent_email.body
 
@@ -1830,38 +1856,6 @@ class RegistrationViewTestV1(
             mock_get_value.side_effect = _side_effect_for_get_value
             response = self.client.post(self.url, {"email": self.EMAIL, "username": self.USERNAME})
             assert response.status_code == 403
-
-    @override_settings(
-        CACHES={
-            'default': {
-                'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-                'LOCATION': 'registration_proxy',
-            }
-        }
-    )
-    def test_rate_limiting_registration_view(self):
-        """
-        Confirm rate limits work as expected for registration
-        end point.
-        Note that drf's rate limiting makes use of the default cache
-        to enforce limits; that's why this test needs a "real"
-        default cache (as opposed to the usual-for-tests DummyCache)
-        """
-        payload = {
-            "email": 'email',
-            "name": self.NAME,
-            "username": self.USERNAME,
-            "password": self.PASSWORD,
-            "honor_code": "true",
-        }
-
-        for _ in range(int(settings.REGISTRATION_RATELIMIT.split('/')[0])):
-            response = self.client.post(self.url, payload)
-            assert response.status_code != 403
-
-        response = self.client.post(self.url, payload)
-        assert response.status_code == 403
-        cache.clear()
 
     @override_settings(FEATURES=ENABLE_AUTO_GENERATED_USERNAME)
     def test_register_with_auto_generated_username(self):
@@ -2468,6 +2462,53 @@ class RegistrationViewTestV2(RegistrationViewTestV1):
             })
         assert response.status_code == 400
 
+    @patch.dict(settings.FEATURES, {'EMBARGO': True})
+    def test_register_with_disabled_country(self):
+        """
+        Test case to check user registration is forbidden when registration is disabled for a country
+        """
+        country = Country.objects.create(country="KP")
+        GlobalRestrictedCountry.objects.create(country=country)
+        response = self.client.post(self.url, {
+            "email": self.EMAIL,
+            "name": self.NAME,
+            "username": self.USERNAME,
+            "password": self.PASSWORD,
+            "honor_code": "true",
+            "country": "KP",
+        })
+        assert response.status_code == 400
+        response_json = json.loads(response.content.decode('utf-8'))
+        self.assertDictEqual(
+            response_json,
+            {'country':
+                [
+                    {
+                        'user_message': 'Registration from this country is not allowed due to restrictions.'
+                    }
+                ], 'error_code': 'validation-error'}
+        )
+
+    @patch.dict(settings.FEATURES, {'EMBARGO': False})
+    def test_registration_allowed_when_embargo_disabled(self):
+        """
+        Ensures that user registration proceeds normally even for restricted countries
+        when the EMBARGO feature flag is disabled.
+        """
+        country = Country.objects.create(country="KP")
+        GlobalRestrictedCountry.objects.create(country=country)
+
+        response = self.client.post(self.url, {
+            "email": self.EMAIL,
+            "name": self.NAME,
+            "username": self.USERNAME,
+            "password": self.PASSWORD,
+            "honor_code": "true",
+            "country": "KP",
+        })
+
+        self.assertEqual(response.status_code, 200)
+
 
 @httpretty.activate
 @ddt.ddt
@@ -2573,6 +2614,40 @@ class ThirdPartyRegistrationTestMixin(
         response = self.client.post(self.url, self.data())
         assert response.status_code == 200
 
+        self._verify_user_existence(user_exists=True, social_link_exists=True, user_is_active=False)
+
+    @patch.dict(settings.FEATURES, {'EMBARGO': True})
+    def test_with_disabled_country(self):
+        """
+        Test case to check user registration is forbidden when registration is restricted for a country
+        """
+        self._verify_user_existence(user_exists=False, social_link_exists=False)
+        self._setup_provider_response(success=True)
+        country_obj = Country.objects.create(country="US")
+        GlobalRestrictedCountry.objects.create(country=country_obj)
+        response = self.client.post(self.url, self.data())
+        assert response.status_code == 400
+        assert response.json() == {
+            'country': [
+                {
+                    'user_message': 'Registration from this country is not allowed due to restrictions.'
+                }
+            ], 'error_code': 'validation-error'
+        }
+        self._verify_user_existence(user_exists=False, social_link_exists=False, user_is_active=False)
+
+    @patch.dict(settings.FEATURES, {'EMBARGO': False})
+    def test_with_disabled_country_when_embargo_disabled(self):
+        """
+        Ensures that user registration proceeds normally even for restricted countries
+        when the EMBARGO feature flag is disabled.
+        """
+        self._verify_user_existence(user_exists=False, social_link_exists=False)
+        self._setup_provider_response(success=True)
+        country_obj = Country.objects.create(country="US")
+        GlobalRestrictedCountry.objects.create(country=country_obj)
+        response = self.client.post(self.url, self.data())
+        assert response.status_code == 200
         self._verify_user_existence(user_exists=True, social_link_exists=True, user_is_active=False)
 
     def test_unlinked_active_user(self):
@@ -2773,6 +2848,11 @@ class RegistrationValidationViewTests(test_utils.ApiTestCase, OpenEdxEventsTestM
         ['country', list(testutils.VALID_COUNTRIES)],
     )
     @ddt.unpack
+    # HIBP settings are only defined in lms envs but needed for common tests.
+    @override_settings(
+        ENABLE_AUTHN_RESET_PASSWORD_HIBP_POLICY=False,
+        ENABLE_AUTHN_REGISTER_HIBP_POLICY=False,
+    )
     def test_positive_validation_decision(self, form_field_name, user_data):
         """
         Test if {0} as any item in {1} gives a positive validation decision.
@@ -2887,7 +2967,7 @@ class RegistrationValidationViewTests(test_utils.ApiTestCase, OpenEdxEventsTestM
         )
     ])
     def test_password_empty_validation_decision(self):
-        # 2 is the default setting for minimum length found in lms/envs/common.py
+        # 2 is the default setting for minimum length found in openedx/envs/common.py
         # under AUTH_PASSWORD_VALIDATORS.MinimumLengthValidator
         msg = 'This password is too short. It must contain at least 4 characters.'
         self.assertValidationDecision(
@@ -2902,7 +2982,7 @@ class RegistrationValidationViewTests(test_utils.ApiTestCase, OpenEdxEventsTestM
     ])
     def test_password_bad_min_length_validation_decision(self):
         password = 'p'
-        # 2 is the default setting for minimum length found in lms/envs/common.py
+        # 2 is the default setting for minimum length found in openedx/envs/common.py
         # under AUTH_PASSWORD_VALIDATORS.MinimumLengthValidator
         msg = 'This password is too short. It must contain at least 4 characters.'
         self.assertValidationDecision(
@@ -2912,7 +2992,7 @@ class RegistrationValidationViewTests(test_utils.ApiTestCase, OpenEdxEventsTestM
 
     def test_password_bad_max_length_validation_decision(self):
         password = 'p' * DEFAULT_MAX_PASSWORD_LENGTH
-        # 75 is the default setting for maximum length found in lms/envs/common.py
+        # 75 is the default setting for maximum length found in openedx/envs/common.py
         # under AUTH_PASSWORD_VALIDATORS.MaximumLengthValidator
         msg = 'This password is too long. It must contain no more than 75 characters.'
         self.assertValidationDecision(
@@ -2961,9 +3041,6 @@ class RegistrationValidationViewTests(test_utils.ApiTestCase, OpenEdxEventsTestM
             {'email': AUTHN_EMAIL_CONFLICT_MSG}
         )
 
-    @override_settings(
-        ENABLE_AUTHN_REGISTER_HIBP_POLICY=True
-    )
     @mock.patch('eventtracking.tracker.emit')
     @mock.patch(
         'openedx.core.djangoapps.user_api.accounts.api.check_pwned_password',
@@ -2972,6 +3049,12 @@ class RegistrationValidationViewTests(test_utils.ApiTestCase, OpenEdxEventsTestM
             'frequency': 3,
             'user_request_page': 'registration',
         })
+    )
+    # HIBP settings are only defined in lms envs but needed for tests here.
+    @override_settings(
+        ENABLE_AUTHN_REGISTER_HIBP_POLICY=True,
+        ENABLE_AUTHN_RESET_PASSWORD_HIBP_POLICY=True,
+        HIBP_REGISTRATION_PASSWORD_FREQUENCY_THRESHOLD=3.0,
     )
     def test_pwned_password_and_emit_track_event(self, emit):
         self.assertValidationDecision(

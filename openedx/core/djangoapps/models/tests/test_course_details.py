@@ -7,10 +7,8 @@ import datetime
 from django.test import override_settings
 import pytest
 import ddt
-from pytz import UTC
-from unittest.mock import patch  # lint-amnesty, pylint: disable=wrong-import-order
+from zoneinfo import ZoneInfo
 
-from django.conf import settings
 from xmodule.modulestore import ModuleStoreEnum
 from xmodule.data import CertificatesDisplayBehaviors
 from xmodule.modulestore.tests.django_utils import TEST_DATA_SPLIT_MODULESTORE, ModuleStoreTestCase
@@ -34,10 +32,7 @@ class CourseDetailsTestCase(ModuleStoreTestCase):
 
     @ddt.data(True, False)
     def test_virgin_fetch(self, should_have_default_enroll_start):
-        features = settings.FEATURES.copy()
-        features['CREATE_COURSE_WITH_DEFAULT_ENROLLMENT_START_DATE'] = should_have_default_enroll_start
-
-        with override_settings(FEATURES=features):
+        with override_settings(CREATE_COURSE_WITH_DEFAULT_ENROLLMENT_START_DATE=should_have_default_enroll_start):
             course = CourseFactory.create(default_enrollment_start=should_have_default_enroll_start)
             details = CourseDetails.fetch(course.id)
             wrong_enrollment_start_msg = (
@@ -87,13 +82,13 @@ class CourseDetailsTestCase(ModuleStoreTestCase):
             jsondetails.self_paced = True
             assert CourseDetails.update_from_json(self.course.id, jsondetails.__dict__, self.user).self_paced ==\
                    jsondetails.self_paced
-            jsondetails.start_date = datetime.datetime(2010, 10, 1, 0, tzinfo=UTC)
+            jsondetails.start_date = datetime.datetime(2010, 10, 1, 0, tzinfo=ZoneInfo("UTC"))
             assert CourseDetails.update_from_json(self.course.id, jsondetails.__dict__, self.user).start_date ==\
                    jsondetails.start_date
-            jsondetails.end_date = datetime.datetime(2011, 10, 1, 0, tzinfo=UTC)
+            jsondetails.end_date = datetime.datetime(2011, 10, 1, 0, tzinfo=ZoneInfo("UTC"))
             assert CourseDetails.update_from_json(self.course.id, jsondetails.__dict__, self.user).end_date ==\
                    jsondetails.end_date
-            jsondetails.certificate_available_date = datetime.datetime(2010, 10, 1, 0, tzinfo=UTC)
+            jsondetails.certificate_available_date = datetime.datetime(2010, 10, 1, 0, tzinfo=ZoneInfo("UTC"))
             assert CourseDetails.update_from_json(self.course.id, jsondetails.__dict__, self.user)\
                 .certificate_available_date == jsondetails.certificate_available_date
             jsondetails.course_image_name = "an_image.jpg"
@@ -127,7 +122,7 @@ class CourseDetailsTestCase(ModuleStoreTestCase):
                    jsondetails.instructor_info
 
     def test_toggle_pacing_during_course_run(self):
-        self.course.start = datetime.datetime.now(UTC)
+        self.course.start = datetime.datetime.now(ZoneInfo("UTC"))
         self.store.update_item(self.course, self.user.id)
 
         details = CourseDetails.fetch(self.course.id)
@@ -212,30 +207,7 @@ class CourseDetailsTestCase(ModuleStoreTestCase):
         ),
     )
     @ddt.unpack
-    @patch.dict(settings.FEATURES, ENABLE_V2_CERT_DISPLAY_SETTINGS=True)
-    def test_validate_certificate_settings_v2(self, stored_date, stored_behavior, expected_date, expected_behavior):
-        assert CourseDetails.validate_certificate_settings(
-            stored_date, stored_behavior
-        ) == (expected_date, expected_behavior)
-
-    @ddt.data(
-        (
-            EXAMPLE_CERTIFICATE_AVAILABLE_DATE,
-            CertificatesDisplayBehaviors.END_WITH_DATE,
-            EXAMPLE_CERTIFICATE_AVAILABLE_DATE,
-            CertificatesDisplayBehaviors.END_WITH_DATE
-        ),
-        (
-            None,
-            "invalid_option",
-            None,
-            "invalid_option"
-        ),
-    )
-    @ddt.unpack
-    @patch.dict(settings.FEATURES, ENABLE_V2_CERT_DISPLAY_SETTINGS=False)
-    def test_validate_certificate_settings_v1(self, stored_date, stored_behavior, expected_date, expected_behavior):
-        """Test that method just returns passed in arguments if v2 is off"""
+    def test_validate_certificate_settings(self, stored_date, stored_behavior, expected_date, expected_behavior):
         assert CourseDetails.validate_certificate_settings(
             stored_date, stored_behavior
         ) == (expected_date, expected_behavior)

@@ -11,29 +11,21 @@ file and check it in at the same time as your model changes. To do that,
 3. Add the migration file created in edx-platform/common/djangoapps/student/migrations/
 """
 
-import crum
-import hashlib  # lint-amnesty, pylint: disable=wrong-import-order
-import json  # lint-amnesty, pylint: disable=wrong-import-order
-import logging  # lint-amnesty, pylint: disable=wrong-import-order
-import uuid  # lint-amnesty, pylint: disable=wrong-import-order
-from datetime import datetime, timedelta  # lint-amnesty, pylint: disable=wrong-import-order
-from functools import total_ordering  # lint-amnesty, pylint: disable=wrong-import-order
-from importlib import import_module  # lint-amnesty, pylint: disable=wrong-import-order
+import hashlib
+import json
+import logging
+import uuid
+from datetime import datetime, timedelta
+from functools import total_ordering
+from importlib import import_module
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
-from .course_enrollment import (
-    ALLOWEDTOENROLL_TO_ENROLLED,
-    CourseEnrollment,
-    CourseEnrollmentAllowed,
-    CourseOverview,
-    ManualEnrollmentAudit,
-    segment
-)
-
+import crum
 from config_models.models import ConfigurationModel
 from django.apps import apps
 from django.conf import settings
-from django.contrib.auth.models import User  # lint-amnesty, pylint: disable=imported-auth-user
+from django.contrib.auth import get_user_model
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 from django.contrib.sites.models import Site
 from django.core.cache import cache
@@ -41,7 +33,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.validators import FileExtensionValidator, RegexValidator
 from django.db import IntegrityError, models
 from django.db.models import Q
-from django.db.models.signals import post_save, pre_save
+from django.db.models.signals import post_save, pre_save, post_delete
 from django.db.utils import ProgrammingError
 from django.dispatch import receiver
 from django.utils.translation import gettext_lazy as _
@@ -53,7 +45,7 @@ from eventtracking import tracker
 from model_utils.models import TimeStampedModel
 from opaque_keys.edx.django.models import CourseKeyField, LearningContextKeyField
 from pytz import UTC, timezone
-from user_util import user_util
+from openedx.core.lib import user_util
 
 import openedx.core.djangoapps.django_comment_common.comment_client as cc
 from common.djangoapps.util.model_utils import emit_field_changed_events, get_changed_fields_dict
@@ -64,6 +56,16 @@ from openedx.core.djangoapps.xmodule_django.models import NoneToEmptyManager
 from openedx.core.djangolib.model_mixins import DeletableByUserValue
 from openedx.core.toggles import ENTRANCE_EXAMS
 
+from .course_enrollment import (
+    ALLOWEDTOENROLL_TO_ENROLLED,
+    CourseEnrollment,
+    CourseEnrollmentAllowed,
+    CourseOverview,
+    ManualEnrollmentAudit,
+    segment
+)
+
+User = get_user_model()
 log = logging.getLogger(__name__)
 AUDIT_LOG = logging.getLogger("audit")
 SessionStore = import_module(settings.SESSION_ENGINE).SessionStore  # pylint: disable=invalid-name
@@ -72,6 +74,7 @@ IS_MARKETABLE = 'is_marketable'
 
 USER_LOGGED_IN_EVENT_NAME = 'edx.user.login'
 USER_LOGGED_OUT_EVENT_NAME = 'edx.user.logout'
+USER_STREAK_UPDATED_EVENT_NAME = "edx.user.celebration.streak_updated"
 
 
 class AnonymousUserId(models.Model):
@@ -454,7 +457,7 @@ class UserProfile(models.Model):
     location = models.CharField(blank=True, max_length=255, db_index=True)
 
     # Optional demographic data we started capturing from Fall 2012
-    this_year = datetime.now(UTC).year
+    this_year = datetime.now(ZoneInfo("UTC")).year
     VALID_YEARS = list(range(this_year, this_year - 120, -1))
     year_of_birth = models.IntegerField(blank=True, null=True, db_index=True)
     GENDER_CHOICES = (
@@ -552,7 +555,10 @@ class UserProfile(models.Model):
     goals = models.TextField(blank=True, null=True)
     bio = models.CharField(blank=True, null=True, max_length=3000, db_index=False)
     profile_image_uploaded_at = models.DateTimeField(null=True, blank=True)
-    phone_regex = RegexValidator(regex=r'^\+?1?\d*$', message="Phone number can only contain numbers.")
+    phone_regex = RegexValidator(
+        regex=r'^\+?1?\d*$',
+        message="Phone number must start with '+' (optional) followed by digits (0-9) only.",
+    )
     phone_number = models.CharField(validators=[phone_regex], blank=True, null=True, max_length=50)
 
     @property
@@ -567,7 +573,7 @@ class UserProfile(models.Model):
     def age(self):
         """ Convenience method that returns the age given a year_of_birth. """
         year_of_birth = self.year_of_birth
-        year = datetime.now(UTC).year
+        year = datetime.now(ZoneInfo("UTC")).year
         if year_of_birth is not None:
             return self._calculate_age(year, year_of_birth)
 
@@ -691,10 +697,6 @@ def user_profile_pre_save_callback(sender, **kwargs):
     """
     user_profile = kwargs['instance']
 
-    # Remove profile images for users who require parental consent
-    if user_profile.requires_parental_consent() and user_profile.has_profile_image:
-        user_profile.profile_image_uploaded_at = None
-
     # Cache "old" field values on the model instance so that they can be
     # retrieved in the post_save callback when we emit an event with new and
     # old field values.
@@ -797,7 +799,7 @@ def user_post_save_callback(sender, **kwargs):
                 'username': user.username,
                 'name': profile.name,
                 'age': profile.age or -1,
-                'yearOfBirth': profile.year_of_birth or datetime.now(UTC).year,
+                'yearOfBirth': profile.year_of_birth or datetime.now(ZoneInfo("UTC")).year,
                 'education': profile.level_of_education_display,
                 'address': profile.mailing_address,
                 'gender': profile.gender_display,
@@ -981,7 +983,7 @@ class LoginFailures(models.Model):
             if not record.lockout_until:
                 return False
 
-            now = datetime.now(UTC)
+            now = datetime.now(ZoneInfo("UTC"))
             until = record.lockout_until
             is_locked_out = until and now < until
 
@@ -1002,7 +1004,7 @@ class LoginFailures(models.Model):
         if record.failure_count >= max_failures_allowed:
             # yes, then store when this account is locked out until
             lockout_period_secs = settings.MAX_FAILED_LOGIN_ATTEMPTS_LOCKOUT_PERIOD_SECS
-            record.lockout_until = datetime.now(UTC) + timedelta(seconds=lockout_period_secs)
+            record.lockout_until = datetime.now(ZoneInfo("UTC")) + timedelta(seconds=lockout_period_secs)
 
         record.save()
 
@@ -1025,7 +1027,7 @@ class LoginFailures(models.Model):
             entry = cls._get_record_for_user(user)
             entry.delete()
         except ObjectDoesNotExist:
-            return
+            pass
 
     def __str__(self):
         """Str -> Username: count - date."""
@@ -1100,6 +1102,41 @@ class CourseAccessRole(models.Model):
 
     def __str__(self):
         return f"[CourseAccessRole] user: {self.user.username}   role: {self.role}   org: {self.org}   course: {self.course_id}"  # lint-amnesty, pylint: disable=line-too-long
+
+
+class CourseAccessRoleHistory(TimeStampedModel):
+    """
+    Stores the change history for CourseAccessRole objects.
+    """
+    ACTION_CHOICES = (
+        ('created', 'Created'),
+        ('updated', 'Updated'),
+        ('deleted', 'Deleted'),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    org = models.CharField(max_length=64, db_index=True, blank=True)
+    course_id = CourseKeyField(max_length=255, db_index=True, blank=True)
+    role = models.CharField(max_length=64, db_index=True)
+    action_type = models.CharField(max_length=10, choices=ACTION_CHOICES, db_index=True)
+    changed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='courseaccessrole_history_changer',
+    )
+    old_values = models.JSONField(null=True, blank=True, help_text="Stores old values of fields for 'updated' actions.")
+
+    class Meta:
+        permissions = (("can_revert_course_access_role", "Can revert course access role changes"),
+                       ("can_delete_course_access_role_history", "Can delete course access role history"),)
+
+    def __str__(self):
+        return (
+            f"[CourseAccessRoleHistory] user: {self.user.username} role: {self.role} "
+            f"org: {self.org} course: {self.course_id} action: {self.action_type} "
+            f"changed_by: {self.changed_by.username if self.changed_by else 'N/A'} at {self.created}"
+        )
 
 
 #### Helper methods for use from python manage.py shell and other classes.
@@ -1339,21 +1376,37 @@ class LinkedInAddToProfileConfiguration(ConfigurationModel):
         ),
     )
 
+    @property
+    def share_settings(self):
+        """
+        Initialize share_settings once for reuse across methods
+        """
+        if self._share_settings is None:
+            self._share_settings = configuration_helpers.get_value(
+                'SOCIAL_SHARING_SETTINGS',
+                settings.SOCIAL_SHARING_SETTINGS
+            )
+        return self._share_settings
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._share_settings = None
+
     def is_enabled(self, *key_fields):  # pylint: disable=arguments-differ
         """
         Checks both the model itself and share_settings to see if LinkedIn Add to Profile is enabled
         """
         enabled = super().is_enabled(*key_fields)
-        share_settings = configuration_helpers.get_value('SOCIAL_SHARING_SETTINGS', settings.SOCIAL_SHARING_SETTINGS)
-        return share_settings.get('CERTIFICATE_LINKEDIN', enabled)
+        return self.share_settings.get('CERTIFICATE_LINKEDIN', enabled)
 
-    def add_to_profile_url(self, course_name, cert_mode, cert_url, certificate=None):
+    def add_to_profile_url(self, course, cert_mode, cert_url, certificate=None):
+
         """
         Construct the URL for the "add to profile" button. This will autofill the form based on
         the params provided.
 
         Arguments:
-            course_name (str): The display name of the course.
+            course (CourseOverview): Course/CourseOverview Object.
             cert_mode (str): The course mode of the user's certificate (e.g. "verified", "honor", "professional")
             cert_url (str): The URL for the certificate.
 
@@ -1362,11 +1415,11 @@ class LinkedInAddToProfileConfiguration(ConfigurationModel):
                 If provided, this function will also autofill the certId and issue date for the cert.
         """
         params = {
-            'name': self._cert_name(course_name, cert_mode),
+            'name': self._cert_name(course.display_name, cert_mode),
             'certUrl': cert_url,
         }
 
-        params.update(self._organization_information())
+        params.update(self._organization_information(course))
 
         if certificate:
             params.update({
@@ -1390,28 +1443,45 @@ class LinkedInAddToProfileConfiguration(ConfigurationModel):
         Returns:
             str: The formatted string to display for the name field on the LinkedIn Add to Profile dialog.
         """
-        default_cert_name = self.MODE_TO_CERT_NAME.get(cert_mode, _('{platform_name} Certificate for {course_name}'))
+        default_cert_name = self.MODE_TO_CERT_NAME.get(
+            cert_mode, _('{platform_name} Certificate for {course_name}')
+        )
         # Look for an override of the certificate name in the SOCIAL_SHARING_SETTINGS setting
-        share_settings = configuration_helpers.get_value('SOCIAL_SHARING_SETTINGS', settings.SOCIAL_SHARING_SETTINGS)
-        cert_name = share_settings.get('CERTIFICATE_LINKEDIN_MODE_TO_CERT_NAME', {}).get(cert_mode, default_cert_name)
+        cert_name = self.share_settings.get(
+            'CERTIFICATE_LINKEDIN_MODE_TO_CERT_NAME', {}
+        ).get(cert_mode, default_cert_name)
 
         return cert_name.format(
             platform_name=configuration_helpers.get_value('platform_name', settings.PLATFORM_NAME),
             course_name=course_name
         )
 
-    def _organization_information(self):
+    def _organization_information(self, course=None):
         """
-        Returns organization information for use in the URL parameters for add to profile.
+        Returns organization information for use in the URL parameters for add to
+        profile. By default when sharing to LinkedIn, Platform Name and/or Platform
+        LINKEDIN_COMPANY_ID will be used. If Course specific Organization Name is
+        prefered when sharing Certificate to linkedIn the flag for that
+        CERTIFICATE_LINKEDIN_DEFAULTS_TO_COURSE_ORGANIZATION_NAME should be set
+        to True alongside other LinkedIn settings
 
         Returns:
-            dict: Either the organization ID on LinkedIn or the organization's name
+            dict: Either the organization ID on LinkedIn, the organization's name or
+                organization name associated to a specific course
                 Will be used to prefill the organization on the add to profile action.
         """
-        org_id = configuration_helpers.get_value('LINKEDIN_COMPANY_ID', self.company_identifier)
+        prefer_course_organization_name = self.share_settings.get(
+            'CERTIFICATE_LINKEDIN_DEFAULTS_TO_COURSE_ORGANIZATION_NAME', False
+        )
+        if (prefer_course_organization_name and course):
+            return {"organizationName": course.display_organization}
+
+        org_id = configuration_helpers.get_value(
+            "LINKEDIN_COMPANY_ID", self.company_identifier
+        )
         # Prefer organization ID per documentation at https://addtoprofile.linkedin.com/
         if org_id:
-            return {'organizationId': org_id}
+            return {"organizationId": org_id}
         return {'organizationName': configuration_helpers.get_value('platform_name', settings.PLATFORM_NAME)}
 
 
@@ -1682,6 +1752,8 @@ class AllowedAuthUser(TimeStampedModel):
 class AccountRecoveryConfiguration(ConfigurationModel):
     """
     configuration model for recover account management command
+
+    .. no_pii:
     """
     csv_file = models.FileField(
         validators=[FileExtensionValidator(allowed_extensions=['csv'])],
@@ -1764,7 +1836,7 @@ class UserCelebration(TimeStampedModel):
                 # Celebrate if we didn't already celebrate today
                 streak_length_to_celebrate = streak_length
 
-        return last_day_of_streak, streak_length, streak_length_to_celebrate
+        return last_day_of_streak, streak_length, streak_length_to_celebrate, already_updated_streak_today
 
     def _update_streak(self, last_day_of_streak, streak_length):
         """ Update the celebration with the new streak data """
@@ -1775,6 +1847,32 @@ class UserCelebration(TimeStampedModel):
             self.longest_ever_streak = max(self.longest_ever_streak, streak_length)
 
             self.save()
+
+    def _emit_streak_update_event(self, user: User, course_id: str, current_streak_length: int) -> None:
+        """
+        Emits a server-side event using the event tracking library with details about the learner's current streak. The
+        course run ID is included to enable tracking of progress trends over time.
+
+        Args:
+            user (User): The user whose streak is being updated.
+            course_id (str): The course run ID the learner is currently engaged with.
+            current_streak_length (int): The number of consecutive days the user has been active.
+        """
+        context = {
+            "user_id": user.id,
+            "course_id": course_id,
+        }
+        data = {
+            "user_id": user.id,
+            "current_course_id": course_id,
+            "current_streak_length": current_streak_length,
+        }
+
+        with tracker.get_tracker().context(USER_STREAK_UPDATED_EVENT_NAME, context):
+            tracker.emit(
+                USER_STREAK_UPDATED_EVENT_NAME,
+                data,
+            )
 
     @classmethod
     def _get_celebration(cls, user, course_key):
@@ -1790,30 +1888,46 @@ class UserCelebration(TimeStampedModel):
 
     @classmethod
     def perform_streak_updates(cls, user, course_key, browser_timezone=None):
-        """ Determine if the user should see a streak celebration and
-            return the length of the streak the user should celebrate.
-            Also update the streak data that is stored in the database."""
+        """
+        Determine if the user should see a streak celebration and return the length of the streak the user should
+        celebrate.
+
+        Additionally, we record any updates to the current streak in the database and emit a server side
+        event about the update.
+
+        Args:
+            user (User): The user whose streak is being updated.
+            course_key (CourseLocator): The Course Run key of the course the user is currently engaged with when
+                recording the streak update.
+            browser_timezone (str): String representing the current time zone set from a user's web browser.
+                May be null.
+
+        Returns:
+            streak_length_to_celebrate (int): A number representing how many days in a row a learner has been actively
+                engaging in learning content in the courseware.
+        """
         # importing here to avoid a circular import
         from lms.djangoapps.courseware.masquerade import is_masquerading_as_specific_student
-        if not user or user.is_anonymous:
-            return None
-
-        if is_masquerading_as_specific_student(user, course_key):
+        if (
+            not user
+            or user.is_anonymous
+            or is_masquerading_as_specific_student(user, course_key)
+        ):
             return None
 
         celebration = cls._get_celebration(user, course_key)
-
         if not celebration:
             return None
 
         today = cls._get_now(browser_timezone).date()
-
         # pylint: disable=protected-access
-        last_day_of_streak, streak_length, streak_length_to_celebrate = \
+        last_day_of_streak, streak_length, streak_length_to_celebrate, already_updated_streak_today = \
             celebration._calculate_streak_updates(today)
         # pylint: enable=protected-access
 
-        cls._update_streak(celebration, last_day_of_streak, streak_length)
+        if not already_updated_streak_today:
+            cls._update_streak(celebration, last_day_of_streak, streak_length)
+            cls._emit_streak_update_event(celebration, user, str(course_key), streak_length)
 
         return streak_length_to_celebrate
 
@@ -1821,6 +1935,8 @@ class UserCelebration(TimeStampedModel):
 class UserPasswordToggleHistory(TimeStampedModel):
     """
     Keeps track of user password disable/enable history
+
+    .. no_pii:
     """
     user = models.ForeignKey(User, related_name='password_toggle_history', on_delete=models.CASCADE)
     comment = models.CharField(max_length=255, help_text=_("Add a reason"), blank=True, null=True)
@@ -1832,3 +1948,58 @@ class UserPasswordToggleHistory(TimeStampedModel):
 
     def __str__(self):
         return self.comment
+
+
+@receiver(pre_save, sender=CourseAccessRole)
+def pre_save_course_access_role(sender, instance, **kwargs):
+    """
+    Captures the current state of a CourseAccessRole before it is saved for update tracking.
+    """
+    if instance.pk:
+        try:
+            old_instance = sender.objects.get(pk=instance.pk)
+            # pylint: disable=protected-access
+            instance._old_values = {
+                'user_id': old_instance.user_id,
+                'org': old_instance.org,
+                'course_id': str(old_instance.course_id) if old_instance.course_id else None,
+                'role': old_instance.role,
+            }
+        except sender.DoesNotExist:
+            # pylint: disable=protected-access
+            instance._old_values = None
+
+
+@receiver(post_save, sender=CourseAccessRole)
+def create_course_access_role_history_on_save(sender, instance, created, **kwargs):
+    """
+    Handle create and update actions for CourseAccessRole objects.
+    """
+    action_type = 'created' if created else 'updated'
+    current_user = crum.get_current_user()
+    old_values = getattr(instance, '_old_values', None) if not created else None
+    CourseAccessRoleHistory.objects.create(
+        user=instance.user,
+        org=instance.org,
+        course_id=instance.course_id,
+        role=instance.role,
+        action_type=action_type,
+        changed_by=current_user if current_user and current_user.is_authenticated else None,
+        old_values=old_values
+    )
+
+
+@receiver(post_delete, sender=CourseAccessRole)
+def create_course_access_role_history_on_delete(sender, instance, **kwargs):
+    """
+    Handle delete actions for CourseAccessRole objects.
+    """
+    current_user = crum.get_current_user()
+    CourseAccessRoleHistory.objects.create(
+        user=instance.user,
+        org=instance.org,
+        course_id=instance.course_id,
+        role=instance.role,
+        action_type='deleted',
+        changed_by=current_user if current_user and current_user.is_authenticated else None
+    )

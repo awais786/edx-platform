@@ -9,6 +9,7 @@ import urllib.parse
 import uuid
 from collections import namedtuple
 import re
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib import messages
@@ -35,7 +36,6 @@ from eventtracking import tracker
 # Note that this lives in LMS, so this dependency should be refactored.
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey
-from pytz import UTC
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import IsAuthenticated
 
@@ -62,6 +62,8 @@ from openedx.core.djangoapps.user_authn.toggles import (
 )
 from openedx.core.djangolib.markup import HTML, Text
 from openedx.core.lib.api.authentication import BearerAuthenticationAllowInactiveUser
+from openedx.features.course_experience.url_helpers import make_learning_mfe_courseware_url
+from openedx.features.discounts.applicability import FIRST_PURCHASE_DISCOUNT_OVERRIDE_FLAG
 from openedx.features.enterprise_support.utils import is_enterprise_learner
 from common.djangoapps.student.email_helpers import generate_activation_email_context
 from common.djangoapps.student.helpers import DISABLE_UNENROLL_CERT_STATES, cert_info
@@ -69,6 +71,7 @@ from common.djangoapps.student.message_types import AccountActivation, EmailChan
 from common.djangoapps.student.models import (  # lint-amnesty, pylint: disable=unused-import
     AccountRecovery,
     CourseEnrollment,
+    EnrollmentNotAllowed,
     PendingEmailChange,  # unimport:skip
     PendingSecondaryEmailChange,
     Registration,
@@ -206,12 +209,13 @@ def compose_activation_email(
     message_context = generate_activation_email_context(user, user_registration)
     message_context.update({
         'confirm_activation_link': _get_activation_confirmation_link(message_context['key'], redirect_url),
+        'is_enterprise_learner': is_enterprise_learner(user),
+        'is_first_purchase_discount_overridden': FIRST_PURCHASE_DISCOUNT_OVERRIDE_FLAG.is_enabled(),
         'route_enabled': route_enabled,
         'routed_user': user.username,
         'routed_user_email': user.email,
         'routed_profile_name': profile_name,
         'registration_flow': registration_flow,
-        'is_enterprise_learner': is_enterprise_learner(user),
         'show_auto_generated_username': show_auto_generated_username(user.username),
     })
 
@@ -405,7 +409,7 @@ def change_enrollment(request, check_access=True):
             return HttpResponse(redirect_url)
 
         if CourseEntitlement.check_for_existing_entitlement_and_enroll(user=user, course_run_key=course_id):
-            return HttpResponse(reverse('courseware', args=[str(course_id)]))
+            return HttpResponse(make_learning_mfe_courseware_url(course_id))
 
         # Check that auto enrollment is allowed for this course
         # (= the course is NOT behind a paywall)
@@ -420,6 +424,8 @@ def change_enrollment(request, check_access=True):
                 enroll_mode = CourseMode.auto_enroll_mode(course_id, available_modes)
                 if enroll_mode:
                     CourseEnrollment.enroll(user, course_id, check_access=check_access, mode=enroll_mode)
+            except EnrollmentNotAllowed as exc:
+                return HttpResponseBadRequest(str(exc))
             except Exception:  # pylint: disable=broad-except
                 return HttpResponseBadRequest(_("Could not enroll"))
 
@@ -433,7 +439,7 @@ def change_enrollment(request, check_access=True):
             )
 
         if should_redirect_to_courseware_after_enrollment():
-            return HttpResponse(reverse('courseware', args=[str(course_id)]))
+            return HttpResponse(make_learning_mfe_courseware_url(course_id))
         else:
             return HttpResponse()
     elif action == "unenroll":
@@ -533,7 +539,7 @@ def disable_account_ajax(request):
             context['message'] = _("Unexpected account status")
             return JsonResponse(context, status=400)
         user_account.changed_by = request.user
-        user_account.standing_last_changed_at = datetime.datetime.now(UTC)
+        user_account.standing_last_changed_at = datetime.datetime.now(ZoneInfo("UTC"))
         user_account.save()
 
     return JsonResponse(context)
@@ -915,7 +921,7 @@ def confirm_email_change(request, key):
         meta = u_prof.get_meta()
         if 'old_emails' not in meta:
             meta['old_emails'] = []
-        meta['old_emails'].append([user.email, datetime.datetime.now(UTC).isoformat()])
+        meta['old_emails'].append([user.email, datetime.datetime.now(ZoneInfo("UTC")).isoformat()])
         u_prof.set_meta(meta)
         u_prof.save()
         # Send it to the old email...

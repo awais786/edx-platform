@@ -2,15 +2,16 @@
 Models for content staging (and clipboard)
 """
 from __future__ import annotations
+
 import logging
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.translation import gettext_lazy as _
-from opaque_keys.edx.django.models import UsageKeyField
-from opaque_keys.edx.keys import LearningContextKey
-from openedx_learning.lib.fields import case_insensitive_char_field, MultiCollationTextField
+from opaque_keys import InvalidKeyError
+from opaque_keys.edx.keys import ContainerKey, LearningContextKey, UsageKey
+from openedx_django_lib.fields import MultiCollationTextField, case_insensitive_char_field
 
 from openedx.core.djangoapps.content.course_overviews.api import get_course_overview_or_none
 
@@ -63,9 +64,13 @@ class StagedContent(models.Model):
     # A _suggested_ URL name to use for this content. Since this suggestion may already be in use, it's fine to generate
     # a new url_name instead.
     suggested_url_name = models.CharField(max_length=1024)
+    # If applicable, an int >=1 indicating the version of copied content. If not applicable, zero (default).
+    version_num = models.PositiveIntegerField(default=0)
 
     # Tags applied to the original source block(s) will be copied to the new block(s) on paste.
-    tags = models.JSONField(null=True, help_text=_("Content tags applied to these blocks"))
+    tags: models.JSONField[dict | None, dict | None] = models.JSONField(
+        null=True, help_text=_("Content tags applied to these blocks")
+    )
 
     @property
     def olx_filename(self) -> str:
@@ -106,10 +111,28 @@ class UserClipboard(models.Model):
     # previously copied items are not kept.
     user = models.OneToOneField(User, on_delete=models.CASCADE, primary_key=True)
     content = models.ForeignKey(StagedContent, on_delete=models.CASCADE)
-    source_usage_key = UsageKeyField(
+    _source_usage_key = models.CharField(
         max_length=255,
         help_text=_("Original usage key/ID of the thing that is in the clipboard."),
     )
+
+    @property
+    def source_usage_key(self) -> UsageKey | ContainerKey:
+        """ Get the original usage key of the object that is in the clipboard"""
+        try:
+            return UsageKey.from_string(self._source_usage_key)
+        except InvalidKeyError:
+            try:
+                return ContainerKey.from_string(self._source_usage_key)
+            except InvalidKeyError as e:
+                raise ValidationError(f"Invalid source_usage_key: {self._source_usage_key}") from e
+
+    @source_usage_key.setter
+    def source_usage_key(self, value: UsageKey | ContainerKey):
+        """ Set the original usage key of the object that is in the clipboard """
+        if not isinstance(value, (UsageKey, ContainerKey)):
+            raise ValidationError("source_usage_key must be a UsageKey or ContainerKey.")
+        self._source_usage_key = str(value)
 
     @property
     def source_context_key(self) -> LearningContextKey:
@@ -127,7 +150,6 @@ class UserClipboard(models.Model):
 
     def clean(self):
         """ Check that this model is being used correctly. """
-        # These could probably be replaced with constraints in Django 4.1+
         if self.user.id != self.content.user.id:
             raise ValidationError("User ID mismatch.")
         if self.content.purpose != CLIPBOARD_PURPOSE:

@@ -35,7 +35,8 @@ from common.djangoapps.student.roles import (
 from lms.djangoapps.course_api.blocks.api import get_blocks
 from lms.djangoapps.courseware.courses import get_course_with_access
 from lms.djangoapps.courseware.exceptions import CourseAccessRedirect
-from lms.djangoapps.discussion.toggles import ENABLE_DISCUSSIONS_MFE
+from lms.djangoapps.discussion.rate_limit import is_content_creation_rate_limited
+from lms.djangoapps.discussion.toggles import ENABLE_DISCUSSIONS_MFE, ONLY_VERIFIED_USERS_CAN_POST
 from lms.djangoapps.discussion.views import is_privileged_user
 from openedx.core.djangoapps.discussions.models import (
     DiscussionsConfiguration,
@@ -106,6 +107,7 @@ from .forms import CommentActionsForm, ThreadActionsForm, UserOrdering
 from .pagination import DiscussionAPIPagination
 from .permissions import (
     can_delete,
+    can_take_action_on_spam,
     get_editable_fields,
     get_initializable_comment_fields,
     get_initializable_thread_fields
@@ -126,8 +128,10 @@ from .utils import (
     discussion_open_for_user,
     get_usernames_for_course,
     get_usernames_from_search_string,
+    send_signal_after_commit,
     set_attribute,
-    is_posting_allowed
+    is_posting_allowed,
+    can_user_notify_all_learners, is_captcha_enabled, get_captcha_site_key_by_platform
 )
 
 User = get_user_model()
@@ -199,7 +203,7 @@ def _get_course(course_key: CourseKey, user: User, check_tab: bool = True) -> Co
     return course
 
 
-def _get_thread_and_context(request, thread_id, retrieve_kwargs=None):
+def _get_thread_and_context(request, thread_id, retrieve_kwargs=None, course_id=None):
     """
     Retrieve the given thread and build a serializer context for it, returning
     both. This function also enforces access control for the thread (checking
@@ -213,7 +217,7 @@ def _get_thread_and_context(request, thread_id, retrieve_kwargs=None):
             retrieve_kwargs["with_responses"] = False
         if "mark_as_read" not in retrieve_kwargs:
             retrieve_kwargs["mark_as_read"] = False
-        cc_thread = Thread(id=thread_id).retrieve(**retrieve_kwargs)
+        cc_thread = Thread(id=thread_id).retrieve(course_id=course_id, **retrieve_kwargs)
         course_key = CourseKey.from_string(cc_thread["course_id"])
         course = _get_course(course_key, request.user)
         context = get_context(course, request, cc_thread)
@@ -333,6 +337,8 @@ def get_course(request, course_key, check_tab=True):
         course.get_discussion_blackout_datetimes()
     )
     discussion_tab = CourseTabList.get_tab_by_type(course.tabs, 'discussion')
+    is_course_staff = CourseStaffRole(course_key).has_user(request.user)
+    is_course_admin = CourseInstructorRole(course_key).has_user(request.user)
     return {
         "id": str(course_key),
         "is_posting_enabled": is_posting_enabled,
@@ -351,6 +357,7 @@ def get_course(request, course_key, check_tab=True):
         "allow_anonymous": course.allow_anonymous,
         "allow_anonymous_to_peers": course.allow_anonymous_to_peers,
         "user_roles": user_roles,
+        "has_bulk_delete_privileges": can_take_action_on_spam(request.user, course_key),
         "has_moderation_privileges": bool(user_roles & {
             FORUM_ROLE_ADMINISTRATOR,
             FORUM_ROLE_MODERATOR,
@@ -358,8 +365,8 @@ def get_course(request, course_key, check_tab=True):
         }),
         "is_group_ta": bool(user_roles & {FORUM_ROLE_GROUP_MODERATOR}),
         "is_user_admin": request.user.is_staff,
-        "is_course_staff": CourseStaffRole(course_key).has_user(request.user),
-        "is_course_admin": CourseInstructorRole(course_key).has_user(request.user),
+        "is_course_staff": is_course_staff,
+        "is_course_admin": is_course_admin,
         "provider": course_config.provider_type,
         "enable_in_context": course_config.enable_in_context,
         "group_at_subsection": course_config.plugin_configuration.get("group_at_subsection", False),
@@ -372,6 +379,16 @@ def get_course(request, course_key, check_tab=True):
             for (reason_code, label) in CLOSE_REASON_CODES.items()
         ],
         'show_discussions': bool(discussion_tab and discussion_tab.is_enabled(course, request.user)),
+        'is_notify_all_learners_enabled': can_user_notify_all_learners(
+            user_roles, is_course_staff, is_course_admin
+        ),
+        'captcha_settings': {
+            'enabled': is_captcha_enabled(course_key),
+            'site_key': get_captcha_site_key_by_platform('web'),
+        },
+        "is_email_verified": request.user.is_active,
+        "only_verified_users_can_post": ONLY_VERIFIED_USERS_CAN_POST.is_enabled(course_key),
+        "content_creation_rate_limited": is_content_creation_rate_limited(request, course_key, increment=False),
     }
 
 
@@ -990,7 +1007,10 @@ def get_thread_list(
             except ValueError:
                 pass
 
-    if (group_id is None) and not context["has_moderation_privilege"]:
+    if (group_id is None) and (
+        not context["has_moderation_privilege"]
+        or request.user.id in context["ta_user_ids"]
+    ):
         group_id = get_group_id_for_user(request.user, CourseDiscussionSettings.get(course.id))
 
     query_params = {
@@ -998,7 +1018,6 @@ def get_thread_list(
         "group_id": group_id,
         "page": page,
         "per_page": page_size,
-        "text": text_search,
         "sort_key": cc_map.get(order_by),
         "author_id": author_id,
         "flagged": flagged,
@@ -1010,7 +1029,7 @@ def get_thread_list(
         if view in ["unread", "unanswered", "unresponded"]:
             query_params[view] = "true"
         else:
-            ValidationError({
+            raise ValidationError({
                 "view": [f"Invalid value. '{view}' must be 'unread' or 'unanswered'"]
             })
 
@@ -1363,7 +1382,9 @@ def _handle_following_field(form_value, user, cc_content, request):
     else:
         user.unfollow(cc_content)
     signal = thread_followed if form_value else thread_unfollowed
-    signal.send(sender=None, user=user, post=cc_content)
+    send_signal_after_commit(
+        lambda: signal.send(sender=None, user=user, post=cc_content)
+    )
     track_thread_followed_event(request, course, cc_content, form_value)
 
 
@@ -1376,9 +1397,13 @@ def _handle_abuse_flagged_field(form_value, user, cc_content, request):
         track_discussion_reported_event(request, course, cc_content)
         if ENABLE_DISCUSSIONS_MFE.is_enabled(course_key):
             if cc_content.type == 'thread':
-                thread_flagged.send(sender='flag_abuse_for_thread', user=user, post=cc_content)
+                send_signal_after_commit(
+                    lambda: thread_flagged.send(sender='flag_abuse_for_thread', user=user, post=cc_content)
+                )
             else:
-                comment_flagged.send(sender='flag_abuse_for_comment', user=user, post=cc_content)
+                send_signal_after_commit(
+                    lambda: comment_flagged.send(sender='flag_abuse_for_comment', user=user, post=cc_content)
+                )
     else:
         remove_all = bool(is_privileged_user(course_key, User.objects.get(id=user.id)))
         cc_content.unFlagAbuse(user, cc_content, remove_all)
@@ -1388,7 +1413,9 @@ def _handle_abuse_flagged_field(form_value, user, cc_content, request):
 def _handle_voted_field(form_value, cc_content, api_content, request, context):
     """vote or undo vote on thread/comment"""
     signal = thread_voted if cc_content.type == 'thread' else comment_voted
-    signal.send(sender=None, user=context["request"].user, post=cc_content)
+    send_signal_after_commit(
+        lambda: signal.send(sender=None, user=context["request"].user, post=cc_content)
+    )
     if form_value:
         context["cc_requester"].vote(cc_content, "up")
         api_content["vote_count"] += 1
@@ -1433,7 +1460,9 @@ def _handle_comment_signals(update_data, comment, user, sender=None):
     """
     for key, value in update_data.items():
         if key == "endorsed" and value is True:
-            comment_endorsed.send(sender=sender, user=user, post=comment)
+            send_signal_after_commit(
+                lambda: comment_endorsed.send(sender=sender, user=user, post=comment)
+            )
 
 
 def create_thread(request, thread_data):
@@ -1466,6 +1495,8 @@ def create_thread(request, thread_data):
     if not discussion_open_for_user(course, user):
         raise DiscussionBlackOutException
 
+    notify_all_learners = thread_data.pop("notify_all_learners", False)
+
     context = get_context(course, request)
     _check_initializable_thread_fields(thread_data, context)
     discussion_settings = CourseDiscussionSettings.get(course_key)
@@ -1481,12 +1512,15 @@ def create_thread(request, thread_data):
         raise ValidationError(dict(list(serializer.errors.items()) + list(actions_form.errors.items())))
     serializer.save()
     cc_thread = serializer.instance
-    thread_created.send(sender=None, user=user, post=cc_thread)
+    # Use send_signal_after_commit() to ensure the signal is sent only after the transaction commits.
+    send_signal_after_commit(
+        lambda: thread_created.send(sender=None, user=user, post=cc_thread, notify_all_learners=notify_all_learners)
+    )
     api_thread = serializer.data
     _do_extra_actions(api_thread, cc_thread, list(thread_data.keys()), actions_form, context, request)
 
     track_thread_created_event(request, course, cc_thread, actions_form.cleaned_data["following"],
-                               from_mfe_sidebar)
+                               from_mfe_sidebar, notify_all_learners)
 
     return api_thread
 
@@ -1526,12 +1560,14 @@ def create_comment(request, comment_data):
     actions_form = CommentActionsForm(comment_data)
     if not (serializer.is_valid() and actions_form.is_valid()):
         raise ValidationError(dict(list(serializer.errors.items()) + list(actions_form.errors.items())))
+    context["cc_requester"].follow(cc_thread)
     serializer.save()
     cc_comment = serializer.instance
-    comment_created.send(sender=None, user=request.user, post=cc_comment)
+    send_signal_after_commit(
+        lambda: comment_created.send(sender=None, user=request.user, post=cc_comment)
+    )
     api_comment = serializer.data
     _do_extra_actions(api_comment, cc_comment, list(comment_data.keys()), actions_form, context, request)
-
     track_comment_created_event(request, course, cc_comment, cc_thread["commentable_id"], followed=False,
                                 from_mfe_sidebar=from_mfe_sidebar)
     return api_comment
@@ -1565,7 +1601,9 @@ def update_thread(request, thread_id, update_data):
     if set(update_data) - set(actions_form.fields):
         serializer.save()
         # signal to update Teams when a user edits a thread
-        thread_edited.send(sender=None, user=request.user, post=cc_thread)
+        send_signal_after_commit(
+            lambda: thread_edited.send(sender=None, user=request.user, post=cc_thread)
+        )
     api_thread = serializer.data
     _do_extra_actions(api_thread, cc_thread, list(update_data.keys()), actions_form, context, request)
 
@@ -1614,7 +1652,9 @@ def update_comment(request, comment_id, update_data):
     # Only save comment object if some of the edited fields are in the comment data, not extra actions
     if set(update_data) - set(actions_form.fields):
         serializer.save()
-        comment_edited.send(sender=None, user=request.user, post=cc_comment)
+        send_signal_after_commit(
+            lambda: comment_edited.send(sender=None, user=request.user, post=cc_comment)
+        )
     api_comment = serializer.data
     _do_extra_actions(api_comment, cc_comment, list(update_data.keys()), actions_form, context, request)
     _handle_comment_signals(update_data, cc_comment, request.user)
@@ -1645,7 +1685,8 @@ def get_thread(request, thread_id, requested_fields=None, course_id=None):
         retrieve_kwargs={
             "with_responses": True,
             "user_id": str(request.user.id),
-        }
+        },
+        course_id=course_id,
     )
     if course_id and course_id != cc_thread.course_id:
         raise ThreadNotFoundError("Thread not found.")
@@ -1801,7 +1842,9 @@ def delete_thread(request, thread_id):
     cc_thread, context = _get_thread_and_context(request, thread_id)
     if can_delete(cc_thread, context):
         cc_thread.delete()
-        thread_deleted.send(sender=None, user=request.user, post=cc_thread)
+        send_signal_after_commit(
+            lambda: thread_deleted.send(sender=None, user=request.user, post=cc_thread)
+        )
         track_thread_deleted_event(request, context["course"], cc_thread)
     else:
         raise PermissionDenied
@@ -1826,7 +1869,9 @@ def delete_comment(request, comment_id):
     cc_comment, context = _get_comment_and_context(request, comment_id)
     if can_delete(cc_comment, context):
         cc_comment.delete()
-        comment_deleted.send(sender=None, user=request.user, post=cc_comment)
+        send_signal_after_commit(
+            lambda: comment_deleted.send(sender=None, user=request.user, post=cc_comment)
+        )
         track_comment_deleted_event(request, context["course"], cc_comment)
     else:
         raise PermissionDenied

@@ -20,6 +20,7 @@ from lms.djangoapps.verify_student.models import (
     PhotoVerification,
     SoftwareSecurePhotoVerification,
     SSOVerification,
+    VerificationAttempt,
     VerificationException
 )
 from lms.djangoapps.verify_student.tests import TestVerificationBase
@@ -44,8 +45,9 @@ iwIDAQAB
         "AWS_SECRET_KEY": "FAKESECRETKEY",
         "S3_BUCKET": "fake-bucket",
         "CERT_VERIFICATION_PATH": False,
+        "STORAGE_CLASS": "storages.backends.s3boto3.S3Boto3Storage"
     },
-    "DAYS_GOOD_FOR": 10,
+    "DAYS_GOOD_FOR": 10
 }
 
 
@@ -437,3 +439,14 @@ class ManualVerificationTest(TestVerificationBase):
         user = UserFactory.create()
         verification = ManualVerification.objects.create(user=user)
         self.verification_active_at_datetime(verification)
+
+
+class VerificationAttemptTest(TestVerificationBase):
+    """
+    Tests for the VerificationAttempt model
+    """
+
+    def test_active_at_datetime(self):
+        user = UserFactory.create()
+        attempt = VerificationAttempt.objects.create(user=user)
+        self.verification_active_at_datetime(attempt)

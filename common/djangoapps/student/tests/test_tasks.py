@@ -85,6 +85,7 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
         return [
             {
                 "logo_image_url": "https://prod/organization/logos/2cc39992c67a.png",
+                "name": "edX University",
             }
         ]
 
@@ -164,6 +165,7 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
                     "short_description": course_run["short_description"],
                     "pacing_type": course_run["pacing_type"],
                     "partner_image_url": self._get_course_owners()[0]["logo_image_url"],
+                    "org_name": self._get_course_owners()[0]["name"],
                 }
             )
 
@@ -173,10 +175,10 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
     @patch("common.djangoapps.student.tasks.get_owners_for_course")
     @patch("common.djangoapps.student.tasks.get_course_run_details")
     @patch("common.djangoapps.student.tasks.get_course_dates_for_email")
-    @patch("common.djangoapps.student.tasks.get_braze_client")
+    @patch("common.djangoapps.student.tasks.get_email_client")
     def test_success_calls_for_canvas_properties(
         self,
-        mock_get_braze_client,
+        mock_get_email_client,
         mock_get_course_dates_for_email,
         mock_get_course_run_details,
         mock_get_owners_for_course,
@@ -194,7 +196,7 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
         send_course_enrollment_email.apply_async(
             kwargs=self.send_course_enrollment_email_kwargs
         )
-        mock_get_braze_client.return_value.send_canvas_message.assert_called_with(
+        mock_get_email_client.return_value.send_canvas_message.assert_called_with(
             canvas_id=BRAZE_COURSE_ENROLLMENT_CANVAS_ID,
             recipients=[
                 {
@@ -207,14 +209,14 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
     @patch("common.djangoapps.student.tasks.get_course_uuid_for_course")
     @patch("common.djangoapps.student.tasks.get_owners_for_course")
     @patch("common.djangoapps.student.tasks.get_course_run_details")
-    @patch("common.djangoapps.student.tasks.get_braze_client")
+    @patch("common.djangoapps.student.tasks.get_email_client")
     @patch(
         "common.djangoapps.student.tasks.get_course_dates_for_email",
         Mock(side_effect=Exception),
     )
     def test_canvas_properties_without_course_dates(
         self,
-        mock_get_braze_client,
+        mock_get_email_client,
         mock_get_course_run_details,
         mock_get_owners_for_course,
         mock_get_course_uuid_for_course,
@@ -230,7 +232,7 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
         send_course_enrollment_email.apply_async(
             kwargs=self.send_course_enrollment_email_kwargs
         )
-        mock_get_braze_client.return_value.send_canvas_message.assert_called_with(
+        mock_get_email_client.return_value.send_canvas_message.assert_called_with(
             canvas_id=BRAZE_COURSE_ENROLLMENT_CANVAS_ID,
             recipients=[
                 {
@@ -243,14 +245,14 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
     @patch("common.djangoapps.student.tasks.get_course_uuid_for_course")
     @patch("common.djangoapps.student.tasks.get_owners_for_course")
     @patch("common.djangoapps.student.tasks.get_course_dates_for_email")
-    @patch("common.djangoapps.student.tasks.get_braze_client")
+    @patch("common.djangoapps.student.tasks.get_email_client")
     @patch(
         "common.djangoapps.student.tasks.get_course_run_details",
         Mock(side_effect=Exception),
     )
     def test_canvas_properties_on_get_course_run_details_failure(
         self,
-        mock_get_braze_client,
+        mock_get_email_client,
         mock_get_course_dates_for_email,
         mock_get_owners_for_course,
         mock_get_course_uuid_for_course,
@@ -266,7 +268,7 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
         send_course_enrollment_email.apply_async(
             kwargs=self.send_course_enrollment_email_kwargs
         )
-        mock_get_braze_client.return_value.send_canvas_message.assert_called_with(
+        mock_get_email_client.return_value.send_canvas_message.assert_called_with(
             canvas_id=BRAZE_COURSE_ENROLLMENT_CANVAS_ID,
             recipients=[
                 {
@@ -280,12 +282,12 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
 
     @patch("common.djangoapps.student.tasks.get_course_uuid_for_course")
     @patch("common.djangoapps.student.tasks.get_course_dates_for_email")
-    @patch("common.djangoapps.student.tasks.get_braze_client")
+    @patch("common.djangoapps.student.tasks.get_email_client")
     @patch(TASK_LOGGER)
     def test_email_task_when_course_uuid_is_missing(
         self,
         mocked_logger,
-        mock_get_braze_client,
+        mock_get_email_client,
         mock_get_course_dates_for_email,
         mock_get_course_uuid_for_course,
     ):
@@ -304,7 +306,7 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
             f"[Course Enrollment] Course run call failed for "
             f"user: {self.user.id} course: {self.course.id} error: Missing course_uuid"
         )
-        mock_get_braze_client.return_value.send_canvas_message.assert_called_with(
+        mock_get_email_client.return_value.send_canvas_message.assert_called_with(
             canvas_id=BRAZE_COURSE_ENROLLMENT_CANVAS_ID,
             recipients=[
                 {
@@ -318,12 +320,12 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
     @patch("common.djangoapps.student.tasks.get_owners_for_course")
     @patch("common.djangoapps.student.tasks.get_course_run_details")
     @patch("common.djangoapps.student.tasks.get_course_dates_for_email")
-    @patch("common.djangoapps.student.tasks.get_braze_client")
+    @patch("common.djangoapps.student.tasks.get_email_client")
     @patch(TASK_LOGGER)
     def test_email_task_when_course_run_is_missing(
         self,
         mocked_logger,
-        mock_get_braze_client,
+        mock_get_email_client,
         mock_get_course_dates_for_email,
         mock_get_course_run_details,
         mock_get_owners_for_course,
@@ -346,7 +348,7 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
             f"[Course Enrollment] Course run call failed for "
             f"user: {self.user.id} course: {self.course.id} error: Missing course_run"
         )
-        mock_get_braze_client.return_value.send_canvas_message.assert_called_with(
+        mock_get_email_client.return_value.send_canvas_message.assert_called_with(
             canvas_id=BRAZE_COURSE_ENROLLMENT_CANVAS_ID,
             recipients=[
                 {
@@ -360,7 +362,7 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
     @patch("common.djangoapps.student.tasks.get_owners_for_course")
     @patch("common.djangoapps.student.tasks.get_course_run_details")
     @patch("common.djangoapps.student.tasks.get_course_dates_for_email")
-    def test_retry_with_braze_client_exception(
+    def test_retry_with_email_client_exception(
         self,
         mock_get_course_dates_for_email,
         mock_get_course_run_details,
@@ -377,12 +379,53 @@ class TestCourseEnrollmentEmailTask(ModuleStoreTestCase):
         mock_get_course_dates_for_email.return_value = self._get_course_dates()
 
         with patch(
-            'common.djangoapps.student.tasks.get_braze_client',
+            'common.djangoapps.student.tasks.get_email_client',
             new_callable=PropertyMock,
             side_effect=Exception('Braze Client Exception')
-        ) as mock_get_braze_client:
+        ) as mock_get_email_client:
             task = send_course_enrollment_email.apply_async(
                 kwargs=self.send_course_enrollment_email_kwargs
             )
         pytest.raises(Exception, task.get)
-        self.assertEqual(mock_get_braze_client.call_count, (MAX_RETRIES + 1))
+        self.assertEqual(mock_get_email_client.call_count, (MAX_RETRIES + 1))
+
+    @patch("common.djangoapps.student.tasks.get_course_uuid_for_course")
+    @patch("common.djangoapps.student.tasks.get_owners_for_course")
+    @patch("common.djangoapps.student.tasks.get_course_run_details")
+    @patch("common.djangoapps.student.tasks.get_course_dates_for_email")
+    @patch("common.djangoapps.student.tasks.get_email_client")
+    def test_learning_base_url_uses_site_config(
+        self,
+        mock_get_email_client,
+        mock_get_course_dates_for_email,
+        mock_get_course_run_details,
+        mock_get_owners_for_course,
+        mock_get_course_uuid_for_course,
+    ):
+        """Test Braze payload sets learning_base_url from site-configured MFE URL."""
+        mock_get_course_uuid_for_course.return_value = self.course_uuid
+        mock_get_owners_for_course.return_value = self._get_course_owners()
+        mock_get_course_run_details.return_value = self._get_course_run()
+        mock_get_course_dates_for_email.return_value = self._get_course_dates()
+
+        siteconf_url = "https://learningmfe.siteconf"
+
+        def _get_value(key, default):
+            return siteconf_url if key == "LEARNING_MICROFRONTEND_URL" else default
+
+        with patch(
+            "common.djangoapps.student.tasks.configuration_helpers.get_value",
+            side_effect=_get_value,
+        ) as mock_get_value:
+            send_course_enrollment_email.apply_async(kwargs=self.send_course_enrollment_email_kwargs)
+
+        expected = self._get_canvas_properties()
+        expected["learning_base_url"] = siteconf_url
+
+        mock_get_email_client.return_value.send_canvas_message.assert_called_with(
+            canvas_id=BRAZE_COURSE_ENROLLMENT_CANVAS_ID,
+            recipients=[{"external_user_id": self.user.id}],
+            canvas_entry_properties=expected,
+        )
+        mock_get_value.assert_any_call("LEARNING_MICROFRONTEND_URL", settings.LEARNING_MICROFRONTEND_URL)
+        mock_get_value.assert_any_call("LMS_ROOT_URL", settings.LMS_ROOT_URL)

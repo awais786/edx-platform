@@ -5,14 +5,15 @@ SubsectionGrade Class
 
 from abc import ABCMeta
 from collections import OrderedDict
+from datetime import datetime, timezone
 from logging import getLogger
-
 from lazy import lazy
+from xblock.scorable import ShowCorrectness
 
 from lms.djangoapps.grades.models import BlockRecord, PersistentSubsectionGrade
 from lms.djangoapps.grades.scores import compute_percent, get_score, possibly_scored
 from xmodule import block_metadata_utils, graders  # lint-amnesty, pylint: disable=wrong-import-order
-from xmodule.graders import AggregatedScore, ShowCorrectness  # lint-amnesty, pylint: disable=wrong-import-order
+from xmodule.graders import AggregatedScore  # lint-amnesty, pylint: disable=wrong-import-order
 
 log = getLogger(__name__)
 
@@ -59,6 +60,13 @@ class SubsectionGradeBase(metaclass=ABCMeta):
         """
         Returns whether subsection scores are currently available to users with or without staff access.
         """
+        if self.show_correctness == ShowCorrectness.NEVER_BUT_INCLUDE_GRADE:
+            # show_grades fn is used to determine if the grade should be included in final calculation.
+            # For NEVER_BUT_INCLUDE_GRADE, show_grades returns True if the due date has passed,
+            # but correctness_available always returns False as we do not want to show correctness
+            # of problems to the users.
+            return (self.due is None or
+                    self.due < datetime.now(timezone.utc))
         return ShowCorrectness.correctness_available(self.show_correctness, self.due, has_staff_access)
 
     @property
@@ -170,39 +178,21 @@ class NonZeroSubsectionGrade(SubsectionGradeBase, metaclass=ABCMeta):
             csm_scores,
             persisted_block=None,
     ):
-        # TODO: Remove as part of EDUCATOR-4602.
-        if str(block_key.course_key) == 'course-v1:UQx+BUSLEAD5x+2T2019':
-            log.info('Computing block score for block: ***{}*** in course: ***{}***.'.format(
-                str(block_key),
-                str(block_key.course_key),
-            ))
         try:
             block = course_structure[block_key]
         except KeyError:
-            # TODO: Remove as part of EDUCATOR-4602.
-            if str(block_key.course_key) == 'course-v1:UQx+BUSLEAD5x+2T2019':
-                log.info('User\'s access to block: ***{}*** in course: ***{}*** has changed. '
-                         'No block score calculated.'.format(str(block_key), str(block_key.course_key)))
             # It's possible that the user's access to that
             # block has changed since the subsection grade
             # was last persisted.
+            pass
         else:
             if getattr(block, 'has_score', False):
-                # TODO: Remove as part of EDUCATOR-4602.
-                if str(block_key.course_key) == 'course-v1:UQx+BUSLEAD5x+2T2019':
-                    log.info('Block: ***{}*** in course: ***{}*** HAS has_score attribute. Continuing.'
-                             .format(str(block_key), str(block_key.course_key)))
                 return get_score(
                     submissions_scores,
                     csm_scores,
                     persisted_block,
                     block,
                 )
-            # TODO: Remove as part of EDUCATOR-4602.
-            if str(block_key.course_key) == 'course-v1:UQx+BUSLEAD5x+2T2019':
-                log.info('Block: ***{}*** in course: ***{}*** DOES NOT HAVE has_score attribute. '
-                         'No block score calculated.'
-                         .format(str(block_key), str(block_key.course_key)))
 
     @staticmethod
     def _aggregated_score_from_model(grade_model, is_graded):
@@ -283,22 +273,10 @@ class CreateSubsectionGrade(NonZeroSubsectionGrade):
                 start_node=subsection.location,
         ):
             problem_score = self._compute_block_score(block_key, course_structure, submissions_scores, csm_scores)
-
-            # TODO: Remove as part of EDUCATOR-4602.
-            if str(block_key.course_key) == 'course-v1:UQx+BUSLEAD5x+2T2019':
-                log.info('Calculated problem score ***{}*** for block ***{!s}***'
-                         ' in subsection ***{}***.'
-                         .format(problem_score, block_key, subsection.location))
             if problem_score:
                 self.problem_scores[block_key] = problem_score
 
         all_total, graded_total = graders.aggregate_scores(list(self.problem_scores.values()))
-
-        # TODO: Remove as part of EDUCATOR-4602.
-        if str(subsection.location.course_key) == 'course-v1:UQx+BUSLEAD5x+2T2019':
-            log.info('Calculated aggregate all_total ***{}***'
-                     ' and grade_total ***{}*** for subsection ***{}***'
-                     .format(all_total, graded_total, subsection.location))
 
         super().__init__(subsection, all_total, graded_total)
 
@@ -307,11 +285,6 @@ class CreateSubsectionGrade(NonZeroSubsectionGrade):
         Saves or updates the subsection grade in a persisted model.
         """
         if self._should_persist_per_attempted(score_deleted, force_update_subsections):
-            # TODO: Remove as part of EDUCATOR-4602.
-            if str(self.location.course_key) == 'course-v1:UQx+BUSLEAD5x+2T2019':
-                log.info('Updating PersistentSubsectionGrade for student ***{}*** in'
-                         ' subsection ***{}*** with params ***{}***.'
-                         .format(student.id, self.location, self._persisted_model_params(student)))
             model = PersistentSubsectionGrade.update_or_create_grade(**self._persisted_model_params(student))
 
             if hasattr(model, 'override'):

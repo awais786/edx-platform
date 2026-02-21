@@ -3,11 +3,13 @@ general helper functions for xblocks
 """
 
 from opaque_keys.edx.keys import UsageKey
+from xblock.core import XBlock
 from xmodule.modulestore.django import modulestore
+from xmodule.util.keys import BlockKey
 from openedx.core.djangoapps.content_tagging.api import get_object_tag_counts
 
 
-def usage_key_with_run(usage_key_string):
+def usage_key_with_run(usage_key_string: str) -> UsageKey:
     """
     Converts usage_key_string to a UsageKey, adding a course run if necessary
     """
@@ -16,11 +18,26 @@ def usage_key_with_run(usage_key_string):
     return usage_key
 
 
-def get_children_tags_count(xblock):
+def get_block_key_string(usage_key: UsageKey) -> str:
     """
-    Returns a map with tag count of each child
+    Extract block key from UsageKey in string format: `html:my-id`.
     """
-    children = xblock.get_children()
-    child_usage_keys = [str(child.location) for child in children]
-    tags_count_query = ','.join(child_usage_keys)
+    return str(BlockKey.from_usage_key(usage_key))
+
+
+def get_tags_count(xblock: XBlock, include_children=False) -> dict[str, int]:
+    """
+    Returns a map with tag count of the `xblock`
+
+    Use `include_children` to include each children on the query.
+    """
+    query_list = [str(xblock.location)]
+
+    if include_children:
+        children = xblock.get_children()
+        child_usage_keys = [str(child.location) for child in children]
+        query_list.extend(child_usage_keys)
+
+    tags_count_query = ",".join(query_list)
+
     return get_object_tag_counts(tags_count_query, count_implicit=True)

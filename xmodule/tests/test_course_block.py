@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timedelta
 import sys
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 import ddt
 from dateutil import parser
@@ -14,22 +15,21 @@ from django.test import override_settings
 from fs.memoryfs import MemoryFS
 from opaque_keys.edx.keys import CourseKey
 import pytest
-from pytz import utc
 from xblock.runtime import DictKeyValueStore, KvsFieldData
 
 from openedx.core.lib.teams_config import TeamsConfig, DEFAULT_COURSE_RUN_MAX_TEAM_SIZE
 import xmodule.course_block
 from xmodule.course_metadata_utils import DEFAULT_START_DATE
 from xmodule.data import CertificatesDisplayBehaviors
-from xmodule.modulestore.xml import ImportSystem, XMLModuleStore
+from xmodule.modulestore.xml import XMLImportingModuleStoreRuntime, XMLModuleStore
 from xmodule.modulestore.exceptions import InvalidProctoringProvider
 
 ORG = 'test_org'
 COURSE = 'test_course'
 
-NOW = datetime.strptime('2013-01-01T01:00:00', '%Y-%m-%dT%H:%M:00').replace(tzinfo=utc)
+NOW = datetime.strptime('2013-01-01T01:00:00', '%Y-%m-%dT%H:%M:00').replace(tzinfo=ZoneInfo("UTC"))
 
-_TODAY = datetime.now(utc)
+_TODAY = datetime.now(ZoneInfo("UTC"))
 _LAST_WEEK = _TODAY - timedelta(days=7)
 _NEXT_WEEK = _TODAY + timedelta(days=7)
 
@@ -42,9 +42,7 @@ class CourseFieldsTestCase(unittest.TestCase):  # lint-amnesty, pylint: disable=
 
     @ddt.data(True, False)
     def test_default_enrollment_start_date(self, should_have_default_enroll_start):
-        features = settings.FEATURES.copy()
-        features['CREATE_COURSE_WITH_DEFAULT_ENROLLMENT_START_DATE'] = should_have_default_enroll_start
-        with override_settings(FEATURES=features):
+        with override_settings(CREATE_COURSE_WITH_DEFAULT_ENROLLMENT_START_DATE=should_have_default_enroll_start):
             # reimport, so settings override could take effect
             del sys.modules['xmodule.course_block']
             import xmodule.course_block  # lint-amnesty, pylint: disable=redefined-outer-name, reimported
@@ -52,7 +50,10 @@ class CourseFieldsTestCase(unittest.TestCase):  # lint-amnesty, pylint: disable=
             assert xmodule.course_block.CourseFields.enrollment_start.default == expected
 
 
-class DummySystem(ImportSystem):  # lint-amnesty, pylint: disable=abstract-method, missing-class-docstring
+class DummyModuleStoreRuntime(XMLImportingModuleStoreRuntime):  # pylint: disable=abstract-method
+    """
+    Minimal modulestore runtime for tests.
+    """
     @patch('xmodule.modulestore.xml.OSFS', lambda dir: MemoryFS())
     def __init__(self, load_error_blocks, course_id=None):
 
@@ -83,7 +84,7 @@ def get_dummy_course(
 ):
     """Get a dummy course"""
 
-    system = DummySystem(load_error_blocks=True)
+    system = DummyModuleStoreRuntime(load_error_blocks=True)
 
     def to_attrb(n, v):
         return '' if v is None else f'{n}="{v}"'.lower()
@@ -126,7 +127,7 @@ class HasEndedMayCertifyTestCase(unittest.TestCase):
     def setUp(self):
         super().setUp()
 
-        system = DummySystem(load_error_blocks=True)  # lint-amnesty, pylint: disable=unused-variable
+        system = DummyModuleStoreRuntime(load_error_blocks=True)  # lint-amnesty, pylint: disable=unused-variable
 
         past_end = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%dT%H:%M:00")
         future_end = (datetime.now() + timedelta(days=12)).strftime("%Y-%m-%dT%H:%M:00")
@@ -542,13 +543,26 @@ class ProctoringProviderTestCase(unittest.TestCase):
         with override_settings(FEATURES=FEATURES_WITH_PROCTORED_EXAMS):
             if proctored_exams_setting_enabled:
                 with pytest.raises(InvalidProctoringProvider) as context_manager:
-                    self.proctoring_provider.from_json(provider)
+                    self.proctoring_provider.from_json(provider, validate_providers=True)
                 expected_error = f'The selected proctoring provider, {provider}, is not a valid provider. ' \
                     f'Please select from one of {allowed_proctoring_providers}.'
                 assert str(context_manager.value) == expected_error
             else:
-                provider_value = self.proctoring_provider.from_json(provider)
+                provider_value = self.proctoring_provider.from_json(provider, validate_providers=True)
                 assert provider_value == self.proctoring_provider.default
+
+    def test_from_json_validate_providers(self):
+        """
+        Test that an invalid provider is ignored if validate providers is set to false
+        """
+        provider = 'invalid-provider'
+
+        FEATURES_WITH_PROCTORED_EXAMS = settings.FEATURES.copy()
+        FEATURES_WITH_PROCTORED_EXAMS['ENABLE_PROCTORED_EXAMS'] = True
+
+        with override_settings(FEATURES=FEATURES_WITH_PROCTORED_EXAMS):
+            provider_value = self.proctoring_provider.from_json(provider, validate_providers=False)
+            assert provider_value == provider
 
     def test_from_json_adds_platform_default_for_missing_provider(self):
         """

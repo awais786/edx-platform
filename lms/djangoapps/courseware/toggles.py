@@ -2,7 +2,7 @@
 Toggles for courseware in-course experience.
 """
 
-from edx_toggles.toggles import SettingToggle, WaffleSwitch
+from edx_toggles.toggles import SettingToggle, WaffleFlag, WaffleSwitch
 
 from openedx.core.djangoapps.waffle_utils import CourseWaffleFlag
 
@@ -83,33 +83,6 @@ COURSEWARE_MICROFRONTEND_NAVIGATION_SIDEBAR_BLOCKS_DISABLE_CACHING = CourseWaffl
     f'{WAFFLE_FLAG_NAMESPACE}.disable_navigation_sidebar_blocks_caching', __name__
 )
 
-# .. toggle_name: courseware.enable_navigation_sidebar
-# .. toggle_implementation: WaffleFlag
-# .. toggle_default: False
-# .. toggle_description: Enable navigation sidebar on Learning MFE
-# .. toggle_use_cases: opt_out, open_edx
-# .. toggle_creation_date: 2024-03-07
-# .. toggle_target_removal_date: None
-# .. toggle_tickets: FC-0056
-COURSEWARE_MICROFRONTEND_ENABLE_NAVIGATION_SIDEBAR = CourseWaffleFlag(
-    f'{WAFFLE_FLAG_NAMESPACE}.enable_navigation_sidebar', __name__
-)
-
-# .. toggle_name: courseware.always_open_auxiliary_sidebar
-# .. toggle_implementation: WaffleFlag
-# .. toggle_default: True
-# .. toggle_description: Waffle flag that determines whether the auxiliary sidebar,
-#   such as discussion or notification, should automatically expand
-#   on each course unit page within the Learning MFE, without preserving
-#   the previous state of the sidebar.
-# .. toggle_use_cases: temporary
-# .. toggle_creation_date: 2024-04-28
-# .. toggle_target_removal_date: 2024-07-28
-# .. toggle_tickets: FC-0056
-COURSEWARE_MICROFRONTEND_ALWAYS_OPEN_AUXILIARY_SIDEBAR = CourseWaffleFlag(
-    f'{WAFFLE_FLAG_NAMESPACE}.always_open_auxiliary_sidebar', __name__
-)
-
 # .. toggle_name: courseware.mfe_progress_milestones_streak_discount_enabled
 # .. toggle_implementation: CourseWaffleFlag
 # .. toggle_default: False
@@ -148,7 +121,6 @@ COURSEWARE_OPTIMIZED_RENDER_XBLOCK = CourseWaffleFlag(
 # .. toggle_creation_date: 2019-05-16
 # .. toggle_expiration_date: None
 # .. toggle_tickets: https://github.com/mitodl/edx-platform/issues/123
-# .. toggle_status: unsupported
 COURSES_INVITE_ONLY = SettingToggle('COURSES_INVITE_ONLY', default=False)
 
 
@@ -169,29 +141,26 @@ ENABLE_COURSE_DISCOVERY_DEFAULT_LANGUAGE_FILTER = WaffleSwitch(
     f'{WAFFLE_FLAG_NAMESPACE}.discovery_default_language_filter', __name__
 )
 
-
-def courseware_mfe_is_active() -> bool:
-    """
-    Should we serve the Learning MFE as the canonical courseware experience?
-    """
-    from lms.djangoapps.courseware.access_utils import in_preview_mode  # avoid a circular import
-
-    # We only use legacy views for the Studio "preview mode" feature these days, while everyone else gets the MFE
-    return not in_preview_mode()
+# .. toggle_name: courseware.unify_site_and_translation_language
+# .. toggle_implementation: WaffleFlag
+# .. toggle_default: False
+# .. toggle_description: Update LMS to use site language for xpert unit translations and enable new header site language switcher.
+# .. toggle_use_cases: opt_in
+# .. toggle_creation_date: 2026-01-08
+# .. toggle_target_removal_date: None
+# .. toggle_warning: n/a
+# .. toggle_tickets: https://github.com/openedx/edx-platform/pull/37854
+ENABLE_UNIFIED_SITE_AND_TRANSLATION_LANGUAGE = WaffleFlag(
+    f'{WAFFLE_FLAG_NAMESPACE}.unify_site_and_translation_language', __name__
+)
 
 
 def course_exit_page_is_active(course_key):
-    return (
-        courseware_mfe_is_active() and
-        COURSEWARE_MICROFRONTEND_COURSE_EXIT_PAGE.is_enabled(course_key)
-    )
+    return COURSEWARE_MICROFRONTEND_COURSE_EXIT_PAGE.is_enabled(course_key)
 
 
 def courseware_mfe_progress_milestones_are_active(course_key):
-    return (
-        courseware_mfe_is_active() and
-        COURSEWARE_MICROFRONTEND_PROGRESS_MILESTONES.is_enabled(course_key)
-    )
+    return COURSEWARE_MICROFRONTEND_PROGRESS_MILESTONES.is_enabled(course_key)
 
 
 def streak_celebration_is_active(course_key):

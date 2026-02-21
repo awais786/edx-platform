@@ -1,22 +1,30 @@
 """
 This test file will test registration, login, activation, and session activity timeouts
+
+TODO: Rewrite several of these assertions so that they check the output of the REST or Python
+APIs rather than parsing HTML from the deprecated legacy frontend pages. In particular, any
+test case using override_waffle_flag(toggles.LEGACY_STUDIO_*, True) will need to be fixed.
+Part of https://github.com/openedx/edx-platform/issues/36275.
 """
 
 
 import datetime
 import time
 from unittest import mock
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote
 
 from ddt import data, ddt, unpack
 from django.conf import settings
 from django.core.cache import cache
 from django.test.utils import override_settings
 from django.urls import reverse
+from edx_toggles.toggles.testutils import override_waffle_flag
 from pytz import UTC
 
+from cms.djangoapps.contentstore import toggles
 from cms.djangoapps.contentstore.tests.test_course_settings import CourseTestCase
 from cms.djangoapps.contentstore.tests.utils import AjaxEnabledTestClient, parse_json, registration, user
+from cms.djangoapps.contentstore.utils import get_studio_home_url
 from xmodule.modulestore.tests.django_utils import ModuleStoreTestCase  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.modulestore.tests.factories import CourseFactory  # lint-amnesty, pylint: disable=wrong-import-order
 
@@ -85,6 +93,12 @@ class ContentStoreTestCase(ModuleStoreTestCase):
 
 
 @ddt
+# HIBP settings are only defined in lms envs but needed for cms auth related tests.
+@override_settings(
+    ENABLE_AUTHN_LOGIN_BLOCK_HIBP_POLICY=False,
+    ENABLE_AUTHN_LOGIN_NUDGE_HIBP_POLICY=False,
+    ENABLE_AUTHN_REGISTER_HIBP_POLICY=False,
+)
 class AuthTestCase(ContentStoreTestCase):
     """Check that various permissions-related things work"""
 
@@ -100,11 +114,6 @@ class AuthTestCase(ContentStoreTestCase):
         self.client = AjaxEnabledTestClient()
         # clear the cache so ratelimiting won't affect these tests
         cache.clear()
-
-    def check_page_get(self, url, expected):
-        resp = self.client.get_html(url)
-        self.assertEqual(resp.status_code, expected)
-        return resp
 
     def test_private_pages_auth(self):
         """Make sure pages that do require login work."""
@@ -129,7 +138,9 @@ class AuthTestCase(ContentStoreTestCase):
         print('Not logged in')
         for page in auth_pages:
             print(f"Checking '{page}'")
-            self.check_page_get(page, expected=302)
+            resp = self.client.get_html(page)
+            assert resp.status_code == 302
+            assert resp.url == unquote(reverse("login", query={"next": page}))
 
         # Logged in should work.
         self.login(self.email, self.pw)
@@ -137,7 +148,9 @@ class AuthTestCase(ContentStoreTestCase):
         print('Logged in')
         for page in simple_auth_pages:
             print(f"Checking '{page}'")
-            self.check_page_get(page, expected=200)
+            resp = self.client.get_html(page)
+            assert resp.status_code == 302
+            assert resp.url == get_studio_home_url()
 
     @override_settings(SESSION_INACTIVITY_TIMEOUT_IN_SECONDS=1)
     def test_inactive_session_timeout(self):
@@ -153,7 +166,8 @@ class AuthTestCase(ContentStoreTestCase):
         # make sure we can access courseware immediately
         course_url = '/home/'
         resp = self.client.get_html(course_url)
-        self.assertEqual(resp.status_code, 200)
+        assert resp.status_code == 302
+        assert resp.url == get_studio_home_url()
 
         # then wait a bit and see if we get timed out
         time.sleep(2)
@@ -167,6 +181,7 @@ class AuthTestCase(ContentStoreTestCase):
         (True, 'assertContains'),
         (False, 'assertNotContains'))
     @unpack
+    @override_waffle_flag(toggles.LEGACY_STUDIO_LOGGED_OUT_HOME, True)
     def test_signin_and_signup_buttons_index_page(self, allow_account_creation, assertion_method_name):
         """
         Navigate to the home page and check the Sign Up button is hidden when ALLOW_PUBLIC_ACCOUNT_CREATION flag
@@ -249,6 +264,7 @@ class CourseKeyVerificationTestCase(CourseTestCase):
 
     @data(('edX/test_course_key/Test_Course', 200), ('garbage:edX+test_course_key+Test_Course', 404))
     @unpack
+    @override_waffle_flag(toggles.LEGACY_STUDIO_IMPORT, True)
     def test_course_key_decorator(self, course_key, status_code):
         """
         Tests for the ensure_valid_course_key decorator.

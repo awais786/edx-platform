@@ -11,7 +11,7 @@ which communicate with edx-platform over AJAX, but are built and deployed
 independently. Eventually, we expect that MFEs will replace all edx-platform
 frontend pages, except perhaps XBlock views.*
 
-Configuraiton
+Configuration
 *************
 
 To customize the static assets build, set some or all of these variable in your
@@ -127,7 +127,7 @@ If you would like to understand these more deeply, they are defined in
 supported, but their underlying implementations may change without notice.
 
 .. _webpack CLI: https://webpack.js.org/api/cli/
-.. _package.json: ../package.json
+.. _package.json: ../../package.json
 
 Collect assets
 **************

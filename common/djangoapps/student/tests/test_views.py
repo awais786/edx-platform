@@ -8,9 +8,9 @@ import json
 import unittest
 from datetime import datetime, timedelta  # lint-amnesty, pylint: disable=unused-import
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import ddt
-import pytz
 from completion.test_utils import CompletionWaffleTestMixin, submit_completions_for_testing
 from django.conf import settings
 from django.test.utils import override_settings
@@ -51,8 +51,8 @@ from xmodule.modulestore.tests.factories import CourseFactory, BlockFactory  # l
 
 TOMORROW = now() + timedelta(days=1)
 ONE_WEEK_AGO = now() - timedelta(weeks=1)
-THREE_YEARS_FROM_NOW = now() + timedelta(days=(365 * 3))
-THREE_YEARS_AGO = now() - timedelta(days=(365 * 3))
+THREE_YEARS_FROM_NOW = now() + timedelta(days=365 * 3)
+THREE_YEARS_AGO = now() - timedelta(days=365 * 3)
 
 # Name of the method to mock for Content Type Gating.
 GATING_METHOD_NAME = 'openedx.features.content_type_gating.models.ContentTypeGatingConfig.enabled_for_enrollment'
@@ -233,7 +233,7 @@ class StudentDashboardTests(SharedModuleStoreTestCase, MilestonesTestCaseMixin, 
         """
         UserProfile.objects.get(user=self.user).delete()
         response = self.client.get(self.path)
-        self.assertRedirects(response, reverse('account_settings'))
+        self.assertRedirects(response, settings.ACCOUNT_MICROFRONTEND_URL, target_status_code=302)
 
     @patch('common.djangoapps.student.views.dashboard.learner_home_mfe_enabled')
     def test_redirect_to_learner_home(self, mock_learner_home_mfe_enabled):
@@ -948,7 +948,7 @@ class StudentDashboardTests(SharedModuleStoreTestCase, MilestonesTestCaseMixin, 
                     course_id=course.id,
                     mode_slug='verified',
                     mode_display_name='Verified',
-                    expiration_datetime=datetime.now(pytz.UTC) + timedelta(days=1),
+                    expiration_datetime=datetime.now(ZoneInfo("UTC")) + timedelta(days=1),
                     sku=sku
                 )
 

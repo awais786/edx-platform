@@ -15,8 +15,10 @@ import json
 import logging
 import os.path
 import uuid
+
 from datetime import timedelta
 from email.utils import formatdate
+
 
 import requests
 from config_models.models import ConfigurationModel
@@ -31,6 +33,7 @@ from django.utils.timezone import now
 from django.utils.translation import gettext_lazy
 from model_utils import Choices
 from model_utils.models import StatusModel, TimeStampedModel
+from lms.djangoapps.verify_student.statuses import VerificationAttemptStatus
 from opaque_keys.edx.django.models import CourseKeyField
 
 from lms.djangoapps.verify_student.ssencrypt import (
@@ -41,8 +44,8 @@ from lms.djangoapps.verify_student.ssencrypt import (
     rsa_decrypt,
     rsa_encrypt
 )
-from openedx.core.djangoapps.signals.signals import LEARNER_NOW_VERIFIED
-from openedx.core.storage import get_storage
+from common.djangoapps.util.storage import resolve_storage_backend
+from openedx.core.djangoapps.signals.signals import LEARNER_SSO_VERIFIED, PHOTO_VERIFICATION_APPROVED
 
 from .utils import auto_verify_for_testing_enabled, earliest_allowed_verification_date, submit_request_to_ss
 
@@ -248,12 +251,12 @@ class SSOVerification(IDVerificationAttempt):
         ))
 
         # Emit signal to find and generate eligible certificates
-        LEARNER_NOW_VERIFIED.send_robust(
-            sender=SSOVerification,
-            user=self.user
+        LEARNER_SSO_VERIFIED.send_robust(
+            sender=PhotoVerification,
+            user=self.user,
         )
 
-        message = 'LEARNER_NOW_VERIFIED signal fired for {user} from SSOVerification'
+        message = 'LEARNER_SSO_VERIFIED signal fired for {user} from SSOVerification'
         log.info(message.format(user=self.user.username))
 
 
@@ -450,13 +453,14 @@ class PhotoVerification(IDVerificationAttempt):
             days=settings.VERIFY_STUDENT["DAYS_GOOD_FOR"]
         )
         self.save()
+
         # Emit signal to find and generate eligible certificates
-        LEARNER_NOW_VERIFIED.send_robust(
+        PHOTO_VERIFICATION_APPROVED.send_robust(
             sender=PhotoVerification,
-            user=self.user
+            user=self.user,
         )
 
-        message = 'LEARNER_NOW_VERIFIED signal fired for {user} from PhotoVerification'
+        message = 'PHOTO_VERIFICATION_APPROVED signal fired for {user} from PhotoVerification'
         log.info(message.format(user=self.user.username))
 
     @status_before_must_be("ready", "must_retry")
@@ -910,7 +914,6 @@ class SoftwareSecurePhotoVerification(PhotoVerification):
         config = settings.VERIFY_STUDENT["SOFTWARE_SECURE"]
 
         # Default to the S3 backend for backward compatibility
-        storage_class = config.get("STORAGE_CLASS", "storages.backends.s3boto3.S3Boto3Storage")
         storage_kwargs = config.get("STORAGE_KWARGS", {})
 
         # Map old settings to the parameters expected by the storage backend
@@ -922,7 +925,12 @@ class SoftwareSecurePhotoVerification(PhotoVerification):
             storage_kwargs["bucket_name"] = config["S3_BUCKET"]
             storage_kwargs["querystring_expire"] = self.IMAGE_LINK_DURATION
 
-        return get_storage(storage_class, **storage_kwargs)
+        return resolve_storage_backend(
+            storage_key="verify_student",
+            legacy_setting_key="VERIFY_STUDENT",
+            legacy_sec_setting_keys=["SOFTWARE_SECURE", "STORAGE_CLASS"],
+            options=storage_kwargs
+        )
 
     def _get_path(self, prefix, override_receipt_id=None):
         """
@@ -1173,8 +1181,10 @@ class VerificationDeadline(TimeStampedModel):
 
 class SSPVerificationRetryConfig(ConfigurationModel):  # pylint: disable=model-missing-unicode, useless-suppression
     """
-        SSPVerificationRetryConfig used to inject arguments
-        to retry_failed_photo_verifications management command
+    SSPVerificationRetryConfig used to inject arguments
+    to retry_failed_photo_verifications management command
+
+    .. no_pii:
     """
 
     class Meta:
@@ -1189,3 +1199,68 @@ class SSPVerificationRetryConfig(ConfigurationModel):  # pylint: disable=model-m
 
     def __str__(self):
         return str(self.arguments)
+
+
+class VerificationAttempt(StatusModel):
+    """
+    The model represents impelementation-agnostic information about identity verification (IDV) attempts.
+
+    Plugins that implement forms of IDV can store information about IDV attempts in this model for use across
+    the platform.
+
+    .. pii: Contains the name of the user
+    .. pii_types: name
+    .. pii_retirement: local_api
+    """
+    user = models.ForeignKey(User, db_index=True, on_delete=models.CASCADE)
+    name = models.CharField(blank=True, max_length=255)
+
+    STATUS = Choices(
+        VerificationAttemptStatus.CREATED,
+        VerificationAttemptStatus.PENDING,
+        VerificationAttemptStatus.APPROVED,
+        VerificationAttemptStatus.DENIED,
+    )
+
+    expiration_datetime = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    hide_status_from_user = models.BooleanField(
+        default=False,
+        null=True,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    def should_display_status_to_user(self):
+        """When called, returns true or false based on the type of VerificationAttempt"""
+        return not self.hide_status_from_user
+
+    def active_at_datetime(self, deadline):
+        """Check whether the verification was active at a particular datetime.
+
+        Arguments:
+            deadline (datetime): The date at which the verification was active
+                (created before and expiration datetime is after today).
+
+        Returns:
+            bool
+
+        """
+        return (
+            self.created_at <= deadline and
+            (self.expiration_datetime is None or self.expiration_datetime > now())
+        )
+
+    @classmethod
+    def retire_user(cls, user_id):
+        """
+        Retire user as part of GDPR pipeline
+
+        :param user_id: int
+        """
+        verification_attempts = cls.objects.filter(user_id=user_id)
+        verification_attempts.delete()

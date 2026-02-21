@@ -17,9 +17,9 @@ from webob import Response
 from xblock.core import XBlock
 from xblock.exceptions import NoSuchServiceError
 from xblock.fields import Integer, ReferenceValueDict, Scope, String
+from xblock.progress import Progress
 from xmodule.mako_block import MakoTemplateBlockBase
 from xmodule.modulestore.inheritance import UserPartitionList
-from xmodule.progress import Progress
 from xmodule.seq_block import ProctoringFields, SequenceMixin
 from xmodule.studio_editable import StudioEditableBlock
 from xmodule.util.builtin_assets import add_webpack_js_to_fragment
@@ -419,9 +419,8 @@ class SplitTestBlock(  # lint-amnesty, pylint: disable=abstract-method
                 )
             )
             raise
-        else:
-            self.runtime.publish(self, 'xblock.split_test.child_render', {'child_id': child_id})
-            return Response()
+        self.runtime.publish(self, 'xblock.split_test.child_render', {'child_id': child_id})
+        return Response()
 
     def get_icon_class(self):
         return self.child.get_icon_class() if self.child else 'other'

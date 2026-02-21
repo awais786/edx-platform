@@ -1,18 +1,20 @@
-name: CI
+name: Verify Dunder __init__.py Files
 
 on:
   pull_request:
+  merge_group:
+  push:
     branches:
       - master
 
 jobs:
   verify_dunder_init:
     name: Verify __init__.py Files
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Ensure git is installed
         run: |

@@ -26,7 +26,7 @@ from edx_django_utils.monitoring import set_custom_attribute
 from openedx_events.learning.data import UserData, UserPersonalData
 from openedx_events.learning.signals import STUDENT_REGISTRATION_COMPLETED
 from openedx_filters.learning.filters import StudentRegistrationRequested
-from pytz import UTC
+from zoneinfo import ZoneInfo
 from django_ratelimit.decorators import ratelimit
 from requests import HTTPError
 from rest_framework.response import Response
@@ -231,7 +231,7 @@ def create_account_with_params(request, params):  # pylint: disable=too-many-sta
         log.exception('Error while setting is_marketable attribute.')
         is_marketable = None
 
-    _track_user_registration(user, profile, params, third_party_provider, registration, is_marketable)
+    _track_user_registration(user, profile, params, third_party_provider, registration, is_marketable, request=request)
 
     # Sites using multiple languages need to record the language used during registration.
     # If not, compose_and_send_activation_email will be sent in site's default language only.
@@ -263,6 +263,7 @@ def create_account_with_params(request, params):  # pylint: disable=too-many-sta
     REGISTER_USER.send(sender=None, user=user, registration=registration)
 
     # .. event_implemented_name: STUDENT_REGISTRATION_COMPLETED
+    # .. event_type: org.openedx.learning.student.registration.completed.v1
     STUDENT_REGISTRATION_COMPLETED.send_event(
         user=UserData(
             pii=UserPersonalData(
@@ -356,21 +357,27 @@ def _link_user_to_third_party_provider(
     return third_party_provider, running_pipeline
 
 
-def _track_user_registration(user, profile, params, third_party_provider, registration, is_marketable):
+def _track_user_registration(user, profile, params, third_party_provider, registration, is_marketable, request=None):
     """ Track the user's registration. """
     if hasattr(settings, 'LMS_SEGMENT_KEY') and settings.LMS_SEGMENT_KEY:
+        anonymous_id = ""
+        try:
+            anonymous_id = request.COOKIES.get('ajs_anonymous_id', "")
+        except:       # pylint: disable=bare-except
+            pass
         traits = {
             'email': user.email,
             'username': user.username,
             'name': profile.name,
             # Mailchimp requires the age & yearOfBirth to be integers, we send a sane integer default if falsey.
             'age': profile.age or -1,
-            'yearOfBirth': profile.year_of_birth or datetime.datetime.now(UTC).year,
+            'yearOfBirth': profile.year_of_birth or datetime.datetime.now(ZoneInfo("UTC")).year,
             'education': profile.level_of_education_display,
             'address': profile.mailing_address,
             'gender': profile.gender_display,
             'country': str(profile.country),
-            'is_marketable': is_marketable
+            'is_marketable': is_marketable,
+            'anonymous_id': anonymous_id
         }
         if settings.MARKETING_EMAILS_OPT_IN and params.get('marketing_emails_opt_in'):
             email_subscribe = 'subscribed' if is_marketable else 'unsubscribed'
@@ -390,10 +397,14 @@ def _track_user_registration(user, profile, params, third_party_provider, regist
             'is_year_of_birth_selected': bool(profile.year_of_birth),
             'is_education_selected': bool(profile.level_of_education_display),
             'is_goal_set': bool(profile.goals),
-            'total_registration_time': round(float(params.get('totalRegistrationTime', '0'))),
+            'total_registration_time': round(
+                float(params.get('total_registration_time') or params.get('totalRegistrationTime') or 0)
+            ),
             'activation_key': registration.activation_key if registration else None,
             'host': params.get('host', ''),
+            'app_name': params.get('app_name', ''),
             'utm_campaign': params.get('utm_campaign', ''),
+            'anonymous_id': anonymous_id
         }
         # VAN-738 - added below properties to experiment marketing emails opt in/out events on Braze.
         if params.get('marketing_emails_opt_in') and settings.MARKETING_EMAILS_OPT_IN:
@@ -519,7 +530,9 @@ def _record_utm_registration_attribution(request, user):
             # We divide by 1000 here because the javascript timestamp generated is in milliseconds not seconds.
             # PYTHON: time.time()      => 1475590280.823698
             # JS: new Date().getTime() => 1475590280823
-            created_at_datetime = datetime.datetime.fromtimestamp(int(created_at_unixtime) / float(1000), tz=UTC)
+            created_at_datetime = datetime.datetime.fromtimestamp(
+                int(created_at_unixtime) / float(1000), tz=ZoneInfo("UTC")
+            )
             UserAttribute.set_user_attribute(
                 user,
                 REGISTRATION_UTM_CREATED_AT,
@@ -582,12 +595,15 @@ class RegistrationView(APIView):
             data['username'] = get_auto_generated_username(data)
 
         try:
+            # .. filter_implemented_name: StudentRegistrationRequested
+            # .. filter_type: org.openedx.learning.student.registration.requested.v1
             data = StudentRegistrationRequested.run_filter(form_data=data)
         except StudentRegistrationRequested.PreventRegistration as exc:
             errors = {
                 "error_message": [{"user_message": str(exc)}],
             }
-            return self._create_response(request, errors, status_code=exc.status_code)
+            error_code = getattr(exc, "error_code", None)
+            return self._create_response(request, errors, status_code=exc.status_code, error_code=error_code)
 
         response = self._handle_duplicate_email_username(request, data)
         if response:

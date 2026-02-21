@@ -2,6 +2,7 @@ name: static assets check for lms and cms
 
 on:
   pull_request:
+  merge_group:
   push:
     branches:
       - master
@@ -12,11 +13,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-20.04]
+        os: [ubuntu-24.04]
         python-version:
           - "3.11"
-        node-version: [18, 20]
-        npm-version: [10.5.x]
+        node-version: [20]
+        npm-version: [10.7.x]
         mongo-version:
           - "7.0"
 
@@ -35,10 +36,10 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -48,7 +49,7 @@ jobs:
           sudo apt-get install libxmlsec1-dev pkg-config
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
 
@@ -58,11 +59,11 @@ jobs:
       - name: Get pip cache dir
         id: pip-cache-dir
         run: |
-          echo "::set-output name=dir::$(pip cache dir)"
+          echo "dir=$(pip cache dir)" >> $GITHUB_OUTPUT
 
       - name: Cache pip dependencies
         id: cache-dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.pip-cache-dir.outputs.dir }}
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements/edx/development.txt') }}
@@ -71,9 +72,6 @@ jobs:
       - name: Install Limited Python Deps for Build
         run: |
           pip install -r requirements/edx/assets.txt
-
-      - name: Initiate Mongo DB Service
-        run: sudo systemctl start mongod
 
       - name: Add node_modules bin to $Path
         run: echo $GITHUB_WORKSPACE/node_modules/.bin >> $GITHUB_PATH

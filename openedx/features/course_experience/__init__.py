@@ -18,9 +18,6 @@ DISABLE_COURSE_OUTLINE_PAGE_FLAG = CourseWaffleFlag(  # lint-amnesty, pylint: di
     f'{WAFFLE_FLAG_NAMESPACE}.disable_course_outline_page', __name__
 )
 
-# Waffle flag to enable the sock on the footer of the home and courseware pages.
-DISPLAY_COURSE_SOCK_FLAG = CourseWaffleFlag(f'{WAFFLE_FLAG_NAMESPACE}.display_course_sock', __name__)  # lint-amnesty, pylint: disable=toggle-missing-annotation
-
 # Waffle flag to let learners access a course before its start date.
 COURSE_PRE_START_ACCESS_FLAG = WaffleFlag(f'{WAFFLE_FLAG_NAMESPACE}.pre_start_access', __name__)  # lint-amnesty, pylint: disable=toggle-missing-annotation
 
@@ -33,6 +30,16 @@ COURSE_PRE_START_ACCESS_FLAG = WaffleFlag(f'{WAFFLE_FLAG_NAMESPACE}.pre_start_ac
 # .. toggle_target_removal_date: None
 # .. toggle_warning: This temporary feature toggle does not have a target removal date.
 ENABLE_COURSE_GOALS = CourseWaffleFlag(f'{WAFFLE_FLAG_NAMESPACE}.enable_course_goals', __name__)  # lint-amnesty, pylint: disable=toggle-missing-annotation
+
+# .. toggle_name: course_experience.enable_ses_for_goalreminder
+# .. toggle_implementation: CourseWaffleFlag
+# .. toggle_default: False
+# .. toggle_description: Used to determine whether or not to use AWS SES to send goal reminder emails for the course.
+# .. toggle_use_cases: opt_in, temporary
+# .. toggle_creation_date: 2024-10-06
+# .. toggle_target_removal_date: None
+# .. toggle_warning: This temporary feature toggle does not have a target removal date.
+ENABLE_SES_FOR_GOALREMINDER = CourseWaffleFlag(f'{WAFFLE_FLAG_NAMESPACE}.enable_ses_for_goalreminder', __name__)  # lint-amnesty, pylint: disable=toggle-missing-annotation
 
 # Waffle flag to enable anonymous access to a course
 SEO_WAFFLE_FLAG_NAMESPACE = 'seo'
@@ -76,6 +83,23 @@ RELATIVE_DATES_DISABLE_RESET_FLAG = CourseWaffleFlag(f'{WAFFLE_FLAG_NAMESPACE}.r
 # .. toggle_tickets: https://openedx.atlassian.net/browse/AA-36
 CALENDAR_SYNC_FLAG = CourseWaffleFlag(f'{WAFFLE_FLAG_NAMESPACE}.calendar_sync', __name__)  # lint-amnesty, pylint: disable=toggle-missing-annotation
 
+# .. toggle_name: course_experience.enforce_masquerade_start_dates
+# .. toggle_implementation: CourseWaffleFlag
+# .. toggle_default: False
+# .. toggle_description: When enabled, staff masquerading as students will see the same start date
+#   restrictions as actual students. This provides a more accurate preview experience by enforcing
+#   section and subsection start dates even when viewing the course as a masqueraded user.
+#   When disabled (default), masquerading continues to bypass start date restrictions as before.
+# .. toggle_use_cases: opt_in
+# .. toggle_creation_date: 2025-10-08
+# .. toggle_warning: Enabling this flag means staff members masquerading as students will not be able to access course
+#   content before its start date, which may impact course testing workflows.
+#   Also, when you masquerade as a student in a course that starts in the future, you will lock yourself out of the
+#   course in the current Django session. To revert this, you need to log out and log back in.
+ENFORCE_MASQUERADE_START_DATES = CourseWaffleFlag(
+    f'{WAFFLE_FLAG_NAMESPACE}.enforce_masquerade_start_dates', __name__
+)
+
 
 def course_home_page_title(_course):
     """
@@ -94,7 +118,9 @@ def default_course_url(course_key):
     from .url_helpers import get_learning_mfe_home_url
 
     if DISABLE_COURSE_OUTLINE_PAGE_FLAG.is_enabled(course_key):
-        return reverse('courseware', args=[str(course_key)])
+        # Prevent a circular dependency
+        from openedx.features.course_experience.url_helpers import make_learning_mfe_courseware_url
+        return make_learning_mfe_courseware_url(course_key)
 
     return get_learning_mfe_home_url(course_key, url_fragment='home')
 

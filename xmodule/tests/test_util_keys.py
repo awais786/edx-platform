@@ -1,14 +1,15 @@
 """
 Tests for xmodule/util/keys.py
 """
-import ddt
 from unittest import TestCase
 from unittest.mock import Mock
 
-from opaque_keys.edx.locator import BlockUsageLocator
+import ddt
+import pytest
 from opaque_keys.edx.keys import CourseKey
-from xmodule.util.keys import BlockKey, derive_key
+from opaque_keys.edx.locator import BlockUsageLocator
 
+from xmodule.util.keys import BlockKey, derive_key
 
 mock_block = Mock()
 mock_block.id = CourseKey.from_string('course-v1:Beeper+B33P+BOOP')
@@ -43,3 +44,45 @@ class TestDeriveKey(TestCase):
         Test that derive_key returns the expected value.
         """
         assert derive_key(source, parent) == expected
+
+
+@ddt.ddt
+class TestBlockKeyParsing(TestCase):
+    """
+    Tests for parsing BlockKeys.
+    """
+
+    @ddt.data(['chapter:some-id', 'chapter', 'some-id'], ['section:one-more-id', 'section', 'one-more-id'])
+    @ddt.unpack
+    def test_block_key_from_string(self, block_key_str, blockType, blockId):
+        block_key = BlockKey.from_string(block_key_str)
+        assert block_key.type == blockType
+        assert block_key.id == blockId
+
+    @ddt.data('chapter:invalid:some-id', 'sectionone-more-id')
+    def test_block_key_from_string_error(self, block_key_str):
+        with pytest.raises(ValueError):
+            BlockKey.from_string(block_key_str)
+
+    @ddt.data(
+        [BlockKey('chapter', 'some-id'), 'chapter:some-id'], [BlockKey('section', 'one-more-id'), 'section:one-more-id']
+    )
+    @ddt.unpack
+    def test_block_key_to_string(self, block_key, block_key_str):
+        assert str(block_key) == block_key_str
+
+    @ddt.data(
+        [BlockKey('chapter', 'some-id'), BlockUsageLocator(
+            mock_block.id,
+            'chapter',
+            'some-id'
+        )],
+        [BlockKey('section', 'one-more-id'), BlockUsageLocator(
+            mock_block.id,
+            'section',
+            'one-more-id'
+        )]
+    )
+    @ddt.unpack
+    def test_block_key_to_usage_key(self, block_key: BlockKey, block_key_str):
+        assert block_key.to_usage_key(mock_block.id) == block_key_str

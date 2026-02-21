@@ -1,33 +1,31 @@
 """
 URLs for the notifications API.
 """
-from django.conf import settings
-from django.urls import path, re_path
+from django.urls import path
 from rest_framework import routers
 
 from .views import (
-    CourseEnrollmentListView,
     MarkNotificationsSeenAPIView,
     NotificationCountView,
     NotificationListAPIView,
     NotificationReadAPIView,
-    UserNotificationPreferenceView, UserNotificationChannelPreferenceView,
+    preference_update_from_encrypted_username_view,
+    NotificationPreferencesView,
+    NotificationPreferencesViewV3,
 )
 
 router = routers.DefaultRouter()
 
-
 urlpatterns = [
-    path('enrollments/', CourseEnrollmentListView.as_view(), name='enrollment-list'),
-    re_path(
-        fr'^configurations/{settings.COURSE_KEY_PATTERN}$',
-        UserNotificationPreferenceView.as_view(),
-        name='notification-preferences'
+    path(
+        'v2/configurations/',
+        NotificationPreferencesView.as_view(),
+        name='notification-preferences-aggregated-v2'
     ),
-    re_path(
-        fr'^channel/configurations/{settings.COURSE_KEY_PATTERN}$',
-        UserNotificationChannelPreferenceView.as_view(),
-        name='notification-channel-preferences'
+    path(
+        'v3/configurations/',
+        NotificationPreferencesViewV3.as_view(),
+        name='notification-preferences-aggregated-v3'
     ),
     path('', NotificationListAPIView.as_view(), name='notifications-list'),
     path('count/', NotificationCountView.as_view(), name='notifications-count'),
@@ -37,7 +35,10 @@ urlpatterns = [
         name='mark-notifications-seen'
     ),
     path('read/', NotificationReadAPIView.as_view(), name='notifications-read'),
-
+    path('preferences/update/<str:username>/', preference_update_from_encrypted_username_view,
+         name='preference_update_view'),
+    path('preferences/update/<str:username>/<str:patch>/', preference_update_from_encrypted_username_view,
+         name='preference_update_from_encrypted_username_view'),
 ]
 
 urlpatterns += router.urls

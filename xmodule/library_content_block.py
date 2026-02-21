@@ -1,45 +1,39 @@
 """
-LibraryContent: The XBlock used to include blocks from a library in a course.
+LegacyLibraryContent: The XBlock used to randomly select a subset of blocks from a "v1" (modulestore-backed) library.
+
+In Studio, it's called the "Randomized Content Module".
+
+In the long-term, this block is deprecated in favor of "v2" (openedx_content-backed) library references:
+https://github.com/openedx/edx-platform/issues/32457
+
+We need to retain backwards-compatibility, but please do not build any new features into this.
 """
 from __future__ import annotations
 
 import json
 import logging
-import random
-from copy import copy
-from gettext import ngettext, gettext
+import typing as t
+from gettext import gettext, ngettext
 
 import nh3
-from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
-from django.utils.functional import classproperty
-from lxml import etree
-from lxml.etree import XMLSyntaxError
-from opaque_keys import InvalidKeyError
-from opaque_keys.edx.locator import LibraryLocator, LibraryLocatorV2
-from rest_framework import status
+from opaque_keys.edx.locator import LibraryLocator, LibraryUsageLocatorV2
 from web_fragments.fragment import Fragment
 from webob import Response
-from xblock.completable import XBlockCompletionMode
 from xblock.core import XBlock
-from xblock.fields import Boolean, Integer, List, Scope, String
+from xblock.fields import Boolean, Scope, String
 
 from xmodule.capa.responsetypes import registry
-from xmodule.mako_block import MakoTemplateBlockBase
-from xmodule.studio_editable import StudioEditableBlock
-from xmodule.util.builtin_assets import add_webpack_js_to_fragment
+from xmodule.item_bank_block import ItemBankMixin
+from xmodule.modulestore.django import modulestore
+from xmodule.modulestore.exceptions import ItemNotFoundError
 from xmodule.validation import StudioValidation, StudioValidationMessage
-from xmodule.xml_block import XmlMixin
-from xmodule.x_module import (
-    STUDENT_VIEW,
-    ResourceTemplates,
-    XModuleMixin,
-    XModuleToXBlockMixin,
-    shim_xmodule_js,
-)
+from xmodule.x_module import XModuleToXBlockMixin
 
-# Make '_' a no-op so we can scrape strings. Using lambda instead of
-#  `django.utils.translation.ugettext_noop` because Django cannot be imported in this file
+if t.TYPE_CHECKING:
+    from xmodule.library_tools import LegacyLibraryToolsService
+
+
 _ = lambda text: text
 
 logger = logging.getLogger(__name__)
@@ -74,50 +68,17 @@ class LibraryToolsUnavailable(ValueError):
         super().__init__("Needed 'library_tools' features which were not available in the current runtime")
 
 
-@XBlock.wants('library_tools')  # TODO: Split this service into its LMS and CMS parts.
+@XBlock.wants('library_tools')
 @XBlock.wants('studio_user_permissions')  # Only available in CMS.
-@XBlock.wants('user')
-@XBlock.needs('mako')
-class LibraryContentBlock(
-    MakoTemplateBlockBase,
-    XmlMixin,
-    XModuleToXBlockMixin,
-    ResourceTemplates,
-    XModuleMixin,
-    StudioEditableBlock,
-):
+class LegacyLibraryContentBlock(ItemBankMixin, XModuleToXBlockMixin, XBlock):
     """
-    An XBlock whose children are chosen dynamically from a content library.
+    An XBlock whose children are chosen dynamically from a legacy (v1) content library.
     Can be used to create randomized assessments among other things.
 
     Note: technically, all matching blocks from the content library are added
     as children of this block, but only a subset of those children are shown to
     any particular student.
     """
-    # pylint: disable=abstract-method
-    has_children = True
-    has_author_view = True
-
-    resources_dir = 'assets/library_content'
-
-    mako_template = 'widgets/metadata-edit.html'
-    studio_js_module_name = "VerticalDescriptor"
-
-    show_in_read_only_mode = True
-
-    # noinspection PyMethodParameters
-    @classproperty
-    def completion_mode(cls):  # pylint: disable=no-self-argument
-        """
-        Allow overriding the completion mode with a feature flag.
-
-        This is a property, so it can be dynamically overridden in tests, as it is not evaluated at runtime.
-        """
-        if settings.FEATURES.get('MARK_LIBRARY_CONTENT_BLOCK_COMPLETE_ON_VIEW', False):
-            return XBlockCompletionMode.COMPLETABLE
-
-        return XBlockCompletionMode.AGGREGATOR
-
     display_name = String(
         display_name=_("Display Name"),
         help=_("The display name for this component."),
@@ -135,23 +96,6 @@ class LibraryContentBlock(
         display_name=_("Library Version"),
         scope=Scope.settings,
     )
-    mode = String(
-        display_name=_("Mode"),
-        help=_("Determines how content is drawn from the library"),
-        default="random",
-        values=[
-            {"display_name": _("Choose n at random"), "value": "random"}
-            # Future addition: Choose a new random set of n every time the student refreshes the block, for self tests
-            # Future addition: manually selected blocks
-        ],
-        scope=Scope.settings,
-    )
-    max_count = Integer(
-        display_name=_("Count"),
-        help=_("Enter the number of components to display to each student. Set it to -1 to display all components."),
-        default=1,
-        scope=Scope.settings,
-    )
     capa_type = String(
         display_name=_("Problem Type"),
         help=_('Choose a problem type to fetch from the library. If "Any Type" is selected no filtering is applied.'),
@@ -159,263 +103,44 @@ class LibraryContentBlock(
         values=_get_capa_types(),
         scope=Scope.settings,
     )
-    selected = List(
-        # This is a list of (block_type, block_id) tuples used to record
-        # which random/first set of matching blocks was selected per user
-        default=[],
-        scope=Scope.user_state,
-    )
-    # This cannot be called `show_reset_button`, because children blocks inherit this as a default value.
-    allow_resetting_children = Boolean(
-        display_name=_("Show Reset Button"),
-        help=_("Determines whether a 'Reset Problems' button is shown, so users may reset their answers and reshuffle "
-               "selected items."),
+    # This is a hidden field that stores whether child blocks are migrated to v2, i.e., whether they have an upstream.
+    # We can never completely remove the legacy library_content block; otherwise, we'd lose student data,
+    # (such as selected fields), which tracks the children selected for each user.
+    # However, once all legacy libraries are migrated to v2 and removed, this block can be converted into a very thin
+    # compatibility wrapper around ItemBankBlock. All other aspects of LegacyLibraryContentBlock (the editor, the child
+    # viewer, the block picker, the legacy syncing mechanism, etc.) can then be removed.
+    is_migrated_to_v2 = Boolean(
+        display_name=_("Is Migrated to library v2"),
         scope=Scope.settings,
-        default=False
+        default=False,
     )
 
     @property
     def source_library_key(self):
         """
         Convenience method to get the library ID as a LibraryLocator and not just a string.
-
-        Supports either library v1 or library v2 locators.
         """
-        try:
-            return LibraryLocator.from_string(self.source_library_id)
-        except InvalidKeyError:
-            return LibraryLocatorV2.from_string(self.source_library_id)
+        return LibraryLocator.from_string(self.source_library_id)
 
-    @classmethod
-    def make_selection(cls, selected, children, max_count, mode):
+    @property
+    def is_source_lib_migrated_to_v2(self) -> bool:
         """
-        Dynamically selects block_ids indicating which of the possible children are displayed to the current user.
-
-        Arguments:
-            selected - list of (block_type, block_id) tuples assigned to this student
-            children - children of this block
-            max_count - number of components to display to each student
-            mode - how content is drawn from the library
-
-        Returns:
-            A dict containing the following keys:
-
-            'selected' (set) of (block_type, block_id) tuples assigned to this student
-            'invalid' (set) of dropped (block_type, block_id) tuples that are no longer valid
-            'overlimit' (set) of dropped (block_type, block_id) tuples that were previously selected
-            'added' (set) of newly added (block_type, block_id) tuples
+        Determines whether the source library has been migrated to v2.
         """
-        rand = random.Random()
+        from cms.djangoapps.modulestore_migrator.api import is_forwarded
 
-        selected_keys = {tuple(k) for k in selected}  # set of (block_type, block_id) tuples assigned to this student
-
-        # Determine which of our children we will show:
-        valid_block_keys = {(c.block_type, c.block_id) for c in children}
-
-        # Remove any selected blocks that are no longer valid:
-        invalid_block_keys = (selected_keys - valid_block_keys)
-        if invalid_block_keys:
-            selected_keys -= invalid_block_keys
-
-        # If max_count has been decreased, we may have to drop some previously selected blocks:
-        overlimit_block_keys = set()
-        if len(selected_keys) > max_count:
-            num_to_remove = len(selected_keys) - max_count
-            overlimit_block_keys = set(rand.sample(list(selected_keys), num_to_remove))
-            selected_keys -= overlimit_block_keys
-
-        # Do we have enough blocks now?
-        num_to_add = max_count - len(selected_keys)
-
-        added_block_keys = None
-        if num_to_add > 0:
-            # We need to select [more] blocks to display to this user:
-            pool = valid_block_keys - selected_keys
-            if mode == "random":
-                num_to_add = min(len(pool), num_to_add)
-                added_block_keys = set(rand.sample(list(pool), num_to_add))
-                # We now have the correct n random children to show for this user.
-            else:
-                raise NotImplementedError("Unsupported mode.")
-            selected_keys |= added_block_keys
-
-        if any((invalid_block_keys, overlimit_block_keys, added_block_keys)):
-            selected = list(selected_keys)
-            random.shuffle(selected)
-
-        return {
-            'selected': selected,
-            'invalid': invalid_block_keys,
-            'overlimit': overlimit_block_keys,
-            'added': added_block_keys,
-        }
-
-    def _publish_event(self, event_name, result, **kwargs):
-        """
-        Helper method to publish an event for analytics purposes
-        """
-        event_data = {
-            "location": str(self.location),
-            "result": result,
-            "previous_count": getattr(self, "_last_event_result_count", len(self.selected)),
-            "max_count": self.max_count,
-        }
-        event_data.update(kwargs)
-        self.runtime.publish(self, f"edx.librarycontentblock.content.{event_name}", event_data)
-        self._last_event_result_count = len(result)  # pylint: disable=attribute-defined-outside-init
-
-    @classmethod
-    def publish_selected_children_events(cls, block_keys, format_block_keys, publish_event):
-        """
-        Helper method for publishing events when children blocks are
-        selected/updated for a user.  This helper is also used by
-        the ContentLibraryTransformer.
-
-        Arguments:
-
-            block_keys -
-                A dict describing which events to publish (add or
-                remove), see `make_selection` above for format details.
-
-            format_block_keys -
-                A function to convert block keys to the format expected
-                by publish_event. Must have the signature:
-
-                    [(block_type, block_id)] -> T
-
-                Where T is a collection of block keys as accepted by
-                `publish_event`.
-
-            publish_event -
-                Function that handles the actual publishing.  Must have
-                the signature:
-
-                    <'removed'|'assigned'> -> result:T -> removed:T -> reason:str -> None
-
-                Where T is a collection of block_keys as returned by
-                `format_block_keys`.
-        """
-        if block_keys['invalid']:
-            # reason "invalid" means deleted from library or a different library is now being used.
-            publish_event(
-                "removed",
-                result=format_block_keys(block_keys['selected']),
-                removed=format_block_keys(block_keys['invalid']),
-                reason="invalid"
-            )
-
-        if block_keys['overlimit']:
-            publish_event(
-                "removed",
-                result=format_block_keys(block_keys['selected']),
-                removed=format_block_keys(block_keys['overlimit']),
-                reason="overlimit"
-            )
-
-        if block_keys['added']:
-            publish_event(
-                "assigned",
-                result=format_block_keys(block_keys['selected']),
-                added=format_block_keys(block_keys['added'])
-            )
-
-    def selected_children(self):
-        """
-        Returns a [] of block_ids indicating which of the possible children
-        have been selected to display to the current user.
-
-        This reads and updates the "selected" field, which has user_state scope.
-
-        Note: the return value (self.selected) contains block_ids. To get
-        actual BlockUsageLocators, it is necessary to use self.children,
-        because the block_ids alone do not specify the block type.
-        """
-        max_count = self.max_count
-        if max_count < 0:
-            max_count = len(self.children)
-
-        block_keys = self.make_selection(self.selected, self.children, max_count, "random")  # pylint: disable=no-member
-
-        # Publish events for analytics purposes:
-        lib_tools = self.get_tools()
-        format_block_keys = lambda keys: lib_tools.create_block_analytics_summary(self.location.course_key, keys)
-        self.publish_selected_children_events(
-            block_keys,
-            format_block_keys,
-            self._publish_event,
+        return (
+            self.source_library_id
+            and self.source_library_version
+            and is_forwarded(self.source_library_key)
         )
 
-        if any(block_keys[changed] for changed in ('invalid', 'overlimit', 'added')):
-            # Save our selections to the user state, to ensure consistency:
-            selected = block_keys['selected']
-            self.selected = selected  # TODO: this doesn't save from the LMS "Progress" page.
-
-        return self.selected
-
-    @XBlock.handler
-    def reset_selected_children(self, _, __):
+    @property
+    def is_ready_to_migrate_to_v2(self) -> bool:
         """
-        Resets the XBlock's state for a user.
-
-        This resets the state of all `selected` children and then clears the `selected` field
-        so that the new blocks are randomly chosen for this user.
+        Returns whether the block can be migrated to v2.
         """
-        if not self.allow_resetting_children:
-            return Response('"Resetting selected children" is not allowed for this XBlock',
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        for block_type, block_id in self.selected_children():
-            block = self.runtime.get_block(self.location.course_key.make_usage_key(block_type, block_id))
-            if hasattr(block, 'reset_problem'):
-                block.reset_problem(None)
-                block.save()
-
-        self.selected = []
-        return Response(json.dumps(self.student_view({}).content))
-
-    def _get_selected_child_blocks(self):
-        """
-        Generator returning XBlock instances of the children selected for the
-        current user.
-        """
-        for block_type, block_id in self.selected_children():
-            yield self.runtime.get_block(self.location.course_key.make_usage_key(block_type, block_id))
-
-    def student_view(self, context):  # lint-amnesty, pylint: disable=missing-function-docstring
-        fragment = Fragment()
-        contents = []
-        child_context = {} if not context else copy(context)
-
-        for child in self._get_selected_child_blocks():
-            if child is None:
-                # TODO: Fix the underlying issue in TNL-7424
-                # This shouldn't be happening, but does for an as-of-now
-                # unknown reason. Until we address the underlying issue,
-                # let's at least log the error explicitly, ignore the
-                # exception, and prevent the page from resulting in a
-                # 500-response.
-                logger.error('Skipping display for child block that is None')
-                continue
-
-            rendered_child = child.render(STUDENT_VIEW, child_context)
-            fragment.add_fragment_resources(rendered_child)
-            contents.append({
-                'id': str(child.location),
-                'content': rendered_child.content,
-            })
-
-        fragment.add_content(self.runtime.service(self, 'mako').render_lms_template('vert_module.html', {
-            'items': contents,
-            'xblock_context': context,
-            'show_bookmark_button': False,
-            'watched_completable_blocks': set(),
-            'completion_delay_ms': None,
-            'reset_button': self.allow_resetting_children,
-        }))
-
-        fragment.add_javascript_url(self.runtime.local_resource_url(self, 'public/js/library_content_reset.js'))
-        fragment.initialize_js('LibraryContentReset')
-        return fragment
+        return self.is_source_lib_migrated_to_v2 and not self.is_migrated_to_v2
 
     def author_view(self, context):
         """
@@ -423,6 +148,9 @@ class LibraryContentBlock(
         Normal studio view: If block is properly configured, displays library status summary
         Studio container view: displays a preview of all possible children.
         """
+        if self.is_migrated_to_v2:
+            # Show ItemBank UI in this case
+            return super().author_view(context)
         fragment = Fragment()
         root_xblock = context.get('root_xblock')
         is_root = root_xblock and root_xblock.location == self.location
@@ -457,40 +185,25 @@ class LibraryContentBlock(
         else:
             fragment.add_javascript_url(self.runtime.local_resource_url(self, 'public/js/library_content_edit.js'))
 
-        fragment.initialize_js('LibraryContentAuthorView')
+        fragment.initialize_js('LibraryContentAuthorView', {"is_root": is_root})
         return fragment
-
-    def studio_view(self, _context):
-        """
-        Return the studio view.
-        """
-        fragment = Fragment(
-            self.runtime.service(self, 'mako').render_cms_template(self.mako_template, self.get_context())
-        )
-        fragment.add_javascript_url(self.runtime.local_resource_url(self, 'public/js/library_content_edit_helpers.js'))
-        add_webpack_js_to_fragment(fragment, 'LibraryContentBlockEditor')
-        shim_xmodule_js(fragment, self.studio_js_module_name)
-        return fragment
-
-    def get_child_blocks(self):
-        """
-        Return only the subset of our children relevant to the current student.
-        """
-        return list(self._get_selected_child_blocks())
 
     @property
     def non_editable_metadata_fields(self):
         non_editable_fields = super().non_editable_metadata_fields
-        # The only supported mode is currently 'random'.
-        # Add the mode field to non_editable_metadata_fields so that it doesn't
-        # render in the edit form.
         non_editable_fields.extend([
-            LibraryContentBlock.mode,
-            LibraryContentBlock.source_library_version,
+            LegacyLibraryContentBlock.source_library_version,
+            LegacyLibraryContentBlock.is_migrated_to_v2,
         ])
+        if self.is_migrated_to_v2:
+            # If the block is migrated, hide legacy settings to make it similar to the new ItemBankBlock.
+            non_editable_fields.extend([
+                LegacyLibraryContentBlock.capa_type,
+                LegacyLibraryContentBlock.source_library_id,
+            ])
         return non_editable_fields
 
-    def get_tools(self, to_read_library_content: bool = False) -> 'LibraryToolsService':
+    def get_tools(self, to_read_library_content: bool = False) -> LegacyLibraryToolsService:
         """
         Grab the library tools service and confirm that it'll work for us. Else, raise LibraryToolsUnavailable.
         """
@@ -498,17 +211,6 @@ class LibraryContentBlock(
             if (not to_read_library_content) or tools.can_use_library_content(self):
                 return tools
         raise LibraryToolsUnavailable()
-
-    def get_user_id(self):
-        """
-        Get the ID of the current user.
-        """
-        user_service = self.runtime.service(self, 'user')
-        if user_service:
-            user_id = user_service.get_current_user().opt_attrs.get('edx-platform.user_id', None)
-        else:
-            user_id = None
-        return user_id
 
     def _validate_sync_permissions(self):
         """
@@ -534,6 +236,12 @@ class LibraryContentBlock(
         Returns 400 if libraray tools or user permission services are not available.
         Returns 403/404 if user lacks read access on source library or write access on this block.
         """
+        if self.is_migrated_to_v2:
+            # If the block is already migrated to behave like ItemBankBlock
+            return Response(
+                _("This block is already migrated to use library v2. You can sync individual blocks now"),
+                status=400
+            )
         self._validate_sync_permissions()
         if not self.source_library_id:
             return Response(_("Source content library has not been specified."), status=400)
@@ -564,22 +272,6 @@ class LibraryContentBlock(
             library_version=(None if upgrade_to_latest else self.source_library_version),
         )
 
-    @XBlock.json_handler
-    def is_v2_library(self, data, suffix=''):  # pylint: disable=unused-argument
-        """
-        Check the library version by library_id.
-
-        This is a temporary handler needed for hiding the Problem Type xblock editor field for V2 libraries.
-        """
-        lib_key = data.get('library_key')
-        try:
-            LibraryLocatorV2.from_string(lib_key)
-        except InvalidKeyError:
-            is_v2 = False
-        else:
-            is_v2 = True
-        return {'is_v2': is_v2}
-
     @XBlock.handler
     def children_are_syncing(self, request, suffix=''):  # pylint: disable=unused-argument
         """
@@ -601,6 +293,10 @@ class LibraryContentBlock(
         if hasattr(super(), 'studio_post_duplicate'):
             super().studio_post_duplicate(store, source_block)
 
+        if self.is_migrated_to_v2:
+            # If the block is already migrated to behave like ItemBankBlock
+            return False  # Children have not been handled
+
         self._validate_sync_permissions()
         self.get_tools(to_read_library_content=True).trigger_duplication(source_block=source_block, dest_block=self)
         return True  # Children have been handled.
@@ -612,14 +308,64 @@ class LibraryContentBlock(
         if hasattr(super(), 'studio_post_paste'):
             super().studio_post_paste(store, source_node)
 
+        if self.is_migrated_to_v2:
+            # If the block is already migrated to behave like ItemBankBlock
+            return False  # Children have not been handled
+
         self.sync_from_library(upgrade_to_latest=False)
         return True  # Children have been handled
+
+    def v2_update_children_upstream_version(self, user_id=None):
+        """
+        Update the upstream and upstream version fields of all children to point to library v2 version of the legacy
+        library blocks. This essentially converts this legacy block to new ItemBankBlock.
+        """
+        from cms.djangoapps.modulestore_migrator import api as migrator_api
+        store = modulestore()
+        with store.bulk_operations(self.course_id):
+            children = self.get_children()
+            # These are the v1 library item upstream UsageKeys
+            child_old_upstream_keys = [
+                self.runtime.modulestore.get_block_original_usage(child.usage_key)[0]
+                for child in children
+            ]
+            child_migrations = migrator_api.get_forwarding_for_blocks(child_old_upstream_keys)
+            for child, old_upstream_key in zip(children, child_old_upstream_keys):
+                upstream_migration = child_migrations.get(old_upstream_key)
+                if upstream_migration and isinstance(upstream_migration.target_key, LibraryUsageLocatorV2):
+                    child.upstream = str(upstream_migration.target_key)
+                    if upstream_migration.target_version_num:
+                        child.upstream_version = upstream_migration.target_version_num
+                else:
+                    child.upstream = ""
+                # Use `modulestore()` instead of `self.runtime.modulestore` to make sure that the XBLOCK_UPDATED signal
+                # is triggered
+                store.update_item(child, user_id)
+            self.is_migrated_to_v2 = True
+            self.save()
+            store.update_item(self, user_id)
 
     def _validate_library_version(self, validation, lib_tools, version, library_key):
         """
         Validates library version
         """
         latest_version = lib_tools.get_latest_library_version(library_key)
+        if self.is_ready_to_migrate_to_v2:
+            validation.set_summary(
+                StudioValidationMessage(
+                    StudioValidationMessage.WARNING,
+                    _(
+                        'This legacy library reference is no longer supported, and'
+                        ' needs to be updated to receive future changes'
+                    ),
+                    # TODO: change this to action_runtime_event='...' once the unit page supports that feature.
+                    # See https://openedx.atlassian.net/browse/TNL-993
+                    action_class='library-block-migrate-btn',
+                    # Translators: {refresh_icon} placeholder is substituted to "↻" (without double quotes)
+                    action_label=_('{refresh_icon} Update reference').format(refresh_icon='↻'),
+                )
+            )
+            return False
         if latest_version is not None:
             if version is None or version != latest_version:
                 validation.set_summary(
@@ -651,13 +397,33 @@ class LibraryContentBlock(
         if validation.empty:
             validation.set_summary(summary)
 
+    @XBlock.handler
+    def upgrade_to_v2_library(self, request=None, suffix=None):
+        """
+        Upgrate this legacy block to a mode where it behaves like the new ItemBankBlock which uses library v2 blocks as
+        children.
+        """
+        if not self.is_source_lib_migrated_to_v2:
+            return Response(_("The source library has not been migrated to version 2"), status=400)
+        if self.is_migrated_to_v2:
+            return Response(_("The block has already been upgraded to version 2"), status=400)
+        # If the source library is migrated but this block still depends on legacy library
+        # Migrate the block by setting upstream field to all children blocks
+        self.v2_update_children_upstream_version()
+        return Response()
+
     def validate(self):
         """
-        Validates the state of this Library Content Block Instance. This
-        is the override of the general XBlock method, and it will also ask
-        its superclass to validate.
+        Validates the state of this Library Content Block Instance.
         """
-        validation = super().validate()
+        if self.is_migrated_to_v2:
+            # If the block is already migrated to v2 i.e. ItemBankBlock
+            # super() will call ItemBankMixin.validate() as it is first in inheritance order
+            return super().validate()
+
+        # We cannot use `super()` here because we do not want to invoke `ItemBankMixin.validate()`.
+        # Instead, we want to use `XBlock.validate`.
+        validation = XBlock.validate(self)
         if not isinstance(validation, StudioValidation):
             validation = StudioValidation.copy(validation)
         try:
@@ -683,7 +449,12 @@ class LibraryContentBlock(
                 )
             )
             return validation
-        self._validate_library_version(validation, lib_tools, self.source_library_version, self.source_library_key)
+        self._validate_library_version(
+            validation,
+            lib_tools,
+            self.source_library_version,
+            self.source_library_key
+        )
 
         # Note: we assume children have been synced
         # since the last time fields like source_library_id or capa_types were changed.
@@ -744,9 +515,10 @@ class LibraryContentBlock(
     def post_editor_saved(self, user, old_metadata, old_content):  # pylint: disable=unused-argument
         """
         If source library or capa_type have been edited, upgrade library & sync automatically.
-
-        TODO: capa_type doesn't really need to trigger an upgrade once we've migrated to V2.
         """
+        if self.is_migrated_to_v2:
+            # If the block is already migrated to v2 i.e. ItemBankBlock, Do nothing
+            return True
         source_lib_changed = (self.source_library_id != old_metadata.get("source_library_id", ""))
         capa_filter_changed = (self.capa_type != old_metadata.get("capa_type", ANY_CAPA_TYPE_VALUE))
         if source_lib_changed or capa_filter_changed:
@@ -756,67 +528,59 @@ class LibraryContentBlock(
                 # The validation area will display an error message, no need to do anything now.
                 pass
 
-    def has_dynamic_children(self):
+    def format_block_keys_for_analytics(self, block_keys: list[tuple[str, str]]) -> list[dict]:
         """
-        Inform the runtime that our children vary per-user.
-        See get_child_blocks() above
+        Implement format_block_keys_for_analytics using the modulestore-specific legacy library original-usage system.
         """
-        return True
+        if self.is_migrated_to_v2:
+            return super().format_block_keys_for_analytics(block_keys)
 
-    def get_content_titles(self):
-        """
-        Returns list of friendly titles for our selected children only; without
-        thi, all possible children's titles would be seen in the sequence bar in
-        the LMS.
+        def summarize_block(usage_key):
+            """ Basic information about the given block """
+            orig_key, orig_version = self.runtime.modulestore.get_block_original_usage(usage_key)
+            return {
+                "usage_key": str(usage_key),
+                "original_usage_key": str(orig_key.replace(version=None, branch=None)) if orig_key else None,
+                "original_usage_version": str(orig_version) if orig_version else None,
+            }
 
-        This overwrites the get_content_titles method included in x_module by default.
-        """
-        titles = []
-        for child in self.get_child_blocks():
-            titles.extend(child.get_content_titles())
-        return titles
+        result_json = []
+        for block_key in block_keys:
+            key = self.context_key.make_usage_key(*block_key)
+            info = summarize_block(key)
+            info['descendants'] = []
+            try:
+                block = self.runtime.modulestore.get_item(key, depth=None)  # Load the item and all descendants
+                children = list(getattr(block, "children", []))
+                while children:
+                    child_key = children.pop().replace(version=None, branch=None)
+                    child = self.runtime.modulestore.get_item(child_key)
+                    info['descendants'].append(summarize_block(child_key))
+                    children.extend(getattr(child, "children", []))
+            except ItemNotFoundError:
+                pass  # The block has been deleted
+            result_json.append(info)
+        return result_json
 
     @classmethod
-    def definition_from_xml(cls, xml_object, system):
-        children = []
+    def get_selected_event_prefix(cls) -> str:
+        """
+        Prefix for events on `self.selected`.
 
-        for child in xml_object.getchildren():
-            try:
-                children.append(system.process_xml(etree.tostring(child)).scope_ids.usage_id)
-            except (XMLSyntaxError, AttributeError):
-                msg = (
-                    "Unable to load child when parsing Library Content Block. "
-                    "This can happen when a comment is manually added to the course export."
-                )
-                logger.error(msg)
-                if system.error_tracker is not None:
-                    system.error_tracker(msg)
-
-        definition = dict(xml_object.attrib.items())
-        return definition, children
-
-    def definition_to_xml(self, resource_fs):
-        """ Exports Library Content Block to XML """
-        xml_object = etree.Element('library_content')
-        for child in self.get_children():
-            self.runtime.add_block_as_child_node(child, xml_object)
-        # Set node attributes based on our fields.
-        for field_name, field in self.fields.items():  # pylint: disable=no-member
-            if field_name in ('children', 'parent', 'content'):
-                continue
-            if field.is_set_on(self):
-                xml_object.set(field_name, str(field.read_from(self)))
-        return xml_object
+        We use librarycontent rather than legacylibrarycontent for backwards compatibility (this wasn't always the
+        "legacy" library content block :)
+        """
+        return "edx.librarycontentblock.content"
 
 
-class LibrarySummary:
+class LegacyLibrarySummary:
     """
     A library summary object which contains the fields required for library listing on studio.
     """
 
     def __init__(self, library_locator, display_name):
         """
-        Initialize LibrarySummary
+        Initialize LegacyLibrarySummary
 
         Arguments:
         library_locator (LibraryLocator):  LibraryLocator object of the library.

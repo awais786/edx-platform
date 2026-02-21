@@ -6,7 +6,7 @@ from __future__ import annotations
 from django.db import models
 from django.db.models import Q, QuerySet
 from django.utils.translation import gettext as _
-from openedx_tagging.core.tagging.models import Taxonomy
+from openedx_tagging.models import Taxonomy
 from organizations.models import Organization
 
 
@@ -16,6 +16,8 @@ class TaxonomyOrg(models.Model):
 
     We keep this as a separate class from ContentTaxonomy so that class can remain a proxy for Taxonomy, keeping the
     data models and usage simple.
+
+    .. no_pii:
     """
 
     class RelType(models.TextChoices):

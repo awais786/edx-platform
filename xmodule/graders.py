@@ -9,9 +9,7 @@ import logging
 import random
 import sys
 from collections import OrderedDict
-from datetime import datetime
 
-from pytz import UTC
 from django.utils.translation import gettext_lazy as _
 
 from xmodule.util.misc import get_short_labeler
@@ -380,14 +378,15 @@ class AssignmentFormatGrader(CourseGrader):
                     earned = random.randint(2, 15)
                     possible = random.randint(earned, 15)
                     section_name = _("Generated")
-
+                    sequential_id = None
                 else:
                     earned = scores[i].graded_total.earned
                     possible = scores[i].graded_total.possible
                     section_name = scores[i].display_name
+                    sequential_id = str(scores[i].location)
 
                 percentage = scores[i].percent_graded
-                summary_format = "{section_type} {index} - {name} - {percent:.0%} ({earned:.3n}/{possible:.3n})"
+                summary_format = "{section_type} {index} - {name} - {percent:.2%} ({earned:.3n}/{possible:.3n})"
                 summary = summary_format.format(
                     index=i + self.starting_index,
                     section_type=self.section_type,
@@ -403,10 +402,11 @@ class AssignmentFormatGrader(CourseGrader):
                     index=i + self.starting_index,
                     section_type=self.section_type
                 )
+                sequential_id = None
             short_label = labeler(i + self.starting_index)
 
             breakdown.append({'percent': percentage, 'label': short_label,
-                              'detail': summary, 'category': self.category})
+                              'detail': summary, 'category': self.category, 'sequential_id': sequential_id})
 
         total_percent, dropped_indices = self.total_with_drops(breakdown)
 
@@ -421,16 +421,17 @@ class AssignmentFormatGrader(CourseGrader):
         if len(breakdown) == 1:
             # if there is only one entry in a section, suppress the existing individual entry and the average,
             # and just display a single entry for the section.
-            total_detail = "{section_type} = {percent:.0%}".format(
+            total_detail = "{section_type} = {percent:.2%}".format(
                 percent=total_percent,
                 section_type=self.section_type,
             )
             total_label = f"{self.short_label}"
             breakdown = [{'percent': total_percent, 'label': total_label,
-                          'detail': total_detail, 'category': self.category, 'prominent': True}, ]
+                          'detail': total_detail, 'category': self.category, 'prominent': True,
+                          'sequential_id': str(scores[0].location) if scores else None}, ]
         else:
             # Translators: "Homework Average = 0%"
-            total_detail = _("{section_type} Average = {percent:.0%}").format(
+            total_detail = _("{section_type} Average = {percent:.2%}").format(
                 percent=total_percent,
                 section_type=self.section_type
             )
@@ -468,36 +469,3 @@ def _min_or_none(itr):
         return min(itr)
     except ValueError:
         return None
-
-
-class ShowCorrectness:
-    """
-    Helper class for determining whether correctness is currently hidden for a block.
-
-    When correctness is hidden, this limits the user's access to the correct/incorrect flags, messages, problem scores,
-    and aggregate subsection and course grades.
-    """
-
-    # Constants used to indicate when to show correctness
-    ALWAYS = "always"
-    PAST_DUE = "past_due"
-    NEVER = "never"
-
-    @classmethod
-    def correctness_available(cls, show_correctness='', due_date=None, has_staff_access=False):
-        """
-        Returns whether correctness is available now, for the given attributes.
-        """
-        if show_correctness == cls.NEVER:
-            return False
-        elif has_staff_access:
-            # This is after the 'never' check because course staff can see correctness
-            # unless the sequence/problem explicitly prevents it
-            return True
-        elif show_correctness == cls.PAST_DUE:
-            # Is it now past the due date?
-            return (due_date is None or
-                    due_date < datetime.now(UTC))
-
-        # else: show_correctness == cls.ALWAYS
-        return True

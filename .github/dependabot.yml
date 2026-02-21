@@ -6,16 +6,4 @@ updates:
     schedule:
         interval: "weekly"
     reviewers:
-      - "openedx/arbi-bom"
-  - package-ecosystem: "github-actions"
-    directory: "/.github/actions/unit-tests/"
-    schedule:
-        interval: "weekly"
-    reviewers:
-      - "openedx/arbi-bom"
-  - package-ecosystem: "github-actions"
-    directory: "/.github/actions/verify-tests-count/"
-    schedule:
-        interval: "weekly"
-    reviewers:
-      - "openedx/arbi-bom"
+      - "openedx/wg-maintenance-edx-platform"

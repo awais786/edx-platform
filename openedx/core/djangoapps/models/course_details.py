@@ -7,11 +7,11 @@ import logging
 import re
 
 from django.conf import settings
+from xblock.fields import Date
 
 from openedx.core.djangolib.markup import HTML
 from openedx.core.lib.courses import course_image_url
 from xmodule.data import CertificatesDisplayBehaviors  # lint-amnesty, pylint: disable=wrong-import-order
-from xmodule.fields import Date  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.modulestore.django import modulestore  # lint-amnesty, pylint: disable=wrong-import-order
 from xmodule.modulestore.exceptions import ItemNotFoundError  # lint-amnesty, pylint: disable=wrong-import-order
 
@@ -71,13 +71,13 @@ class CourseDetails:
         self.pre_requisite_courses = []  # pre-requisite courses
         self.entrance_exam_enabled = ""  # is entrance exam enabled
         self.entrance_exam_id = ""  # the content location for the entrance exam
-        self.entrance_exam_minimum_score_pct = settings.FEATURES.get(
-            'ENTRANCE_EXAM_MIN_SCORE_PCT',
-            '50'
+        self.entrance_exam_minimum_score_pct = str(
+            settings.ENTRANCE_EXAM_MIN_SCORE_PCT
         )  # minimum passing score for entrance exam content module/tree,
         self.self_paced = None
         self.learning_info = []
         self.instructor_info = []
+        self.has_changes = None
 
     @classmethod
     def fetch_about_attribute(cls, course_key, attribute):
@@ -128,8 +128,10 @@ class CourseDetails:
         course_details.video_thumbnail_image_asset_path = course_image_url(block, 'video_thumbnail_image')
         course_details.language = block.language
         course_details.self_paced = block.self_paced
+        course_details.has_changes = modulestore().has_changes(block)
         course_details.learning_info = block.learning_info
         course_details.instructor_info = block.instructor_info
+        course_details.title = block.display_name
 
         # Default course license is "All Rights Reserved"
         course_details.license = getattr(block, "license", "all-rights-reserved")
@@ -371,10 +373,6 @@ class CourseDetails:
             tuple[str, str]: updated certificate_available_date, updated certificates_display_behavior
             None
         """
-        # If V2 is not enable, return original values
-        if not settings.FEATURES.get("ENABLE_V2_CERT_DISPLAY_SETTINGS", False):
-            return (certificate_available_date, certificates_display_behavior)
-
         # "early_no_info" will always show regardless of settings
         if certificates_display_behavior == CertificatesDisplayBehaviors.EARLY_NO_INFO:
             return (None, CertificatesDisplayBehaviors.EARLY_NO_INFO)

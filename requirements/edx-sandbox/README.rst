@@ -55,7 +55,7 @@ releases/quince.txt
 * Supports only Python 3.8
 
 releases/redwood.txt
-----------------------------------
+--------------------
 
 * Frozen at the time of the Redwood release
 * Supports Python 3.8 and Python 3.11
@@ -64,8 +64,8 @@ releases/redwood.txt
   (`NumPy changelog`_)
 * These upgrades prepare edx-sandbox for the Python 3.12 update in Sumac.
 
-releases/sumac.txt (FUTURE PLAN)
---------------------------------
+releases/sumac.txt
+------------------
 
 * Frozen at the time of the Sumac release
 * BREAKING CHANGE: Drops support for Python 3.8 (`Python changelog`_)
@@ -74,3 +74,21 @@ releases/sumac.txt (FUTURE PLAN)
 .. _Python changelog: https://docs.python.org/3.11/whatsnew/changelog.html
 .. _SciPy changelog: https://docs.scipy.org/doc/scipy/release.html
 .. _NumPy changelog: https://numpy.org/doc/stable/release.html
+
+releases/teak.txt
+------------------
+
+* Frozen at the time of the Teak release
+* Supports Python 3.11 and Python 3.12
+* SciPy is upgraded from 1.14.1 to 1.15.2
+
+.. _SciPy changelog: https://docs.scipy.org/doc/scipy/release.html
+
+releases/ulmo.txt
+------------------
+
+* Frozen at the time of the Ulmo release
+* Supports Python 3.11 and Python 3.12
+* SciPy is upgraded from 1.15.2 to 1.16.3
+
+.. _SciPy changelog: https://docs.scipy.org/doc/scipy/release.html

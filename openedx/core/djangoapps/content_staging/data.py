@@ -7,7 +7,9 @@ from datetime import datetime
 
 from django.db.models import TextChoices
 from django.utils.translation import gettext_lazy as _
-from opaque_keys.edx.keys import UsageKey, AssetKey
+from opaque_keys.edx.keys import UsageKey, AssetKey, LearningContextKey, ContainerKey
+
+from openedx.core.djangoapps.content_tagging.api import TagValuesByObjectIdDict
 
 
 class StagedContentStatus(TextChoices):
@@ -25,6 +27,10 @@ class StagedContentStatus(TextChoices):
 
 # Value of the "purpose" field on StagedContent objects used for clipboards.
 CLIPBOARD_PURPOSE = "clipboard"
+
+# Value of the "purpose" field on StagedContent objects used for library to course sync.
+LIBRARY_SYNC_PURPOSE = "library_sync"
+
 # There may be other valid values of "purpose" which aren't defined within this app.
 
 
@@ -42,7 +48,8 @@ class StagedContentData:
     status: StagedContentStatus = field(validator=validators.in_(StagedContentStatus), converter=StagedContentStatus)
     block_type: str = field(validator=validators.instance_of(str))
     display_name: str = field(validator=validators.instance_of(str))
-    tags: dict = field(validator=validators.optional(validators.instance_of(dict)))
+    tags: TagValuesByObjectIdDict = field(validator=validators.optional(validators.instance_of(dict)))
+    version_num: int = field(validator=validators.instance_of(int))
 
 
 @frozen
@@ -54,8 +61,8 @@ class StagedContentFileData:
     # If this asset came from Files & Uploads in a course, this is an AssetKey
     # as a string. If this asset came from an XBlock's filesystem, this is the
     # UsageKey of the XBlock.
-    source_key: AssetKey | UsageKey | None = field(
-        validator=validators.optional(validators.instance_of((AssetKey, UsageKey)))
+    source_key: AssetKey | UsageKey | ContainerKey | None = field(
+        validator=validators.optional(validators.instance_of((AssetKey, UsageKey, ContainerKey)))
     )
     md5_hash: str | None = field(validator=validators.optional(validators.instance_of(str)))
 
@@ -64,4 +71,10 @@ class StagedContentFileData:
 class UserClipboardData:
     """ Read-only data model for User Clipboard data (copied OLX) """
     content: StagedContentData = field(validator=validators.instance_of(StagedContentData))
-    source_usage_key: UsageKey = field(validator=validators.instance_of(UsageKey))  # type: ignore[type-abstract]
+    source_usage_key: UsageKey | ContainerKey
+    source_context_title: str
+
+    @property
+    def source_context_key(self) -> LearningContextKey:
+        """ Get the context (course/library) that this was copied from """
+        return self.source_usage_key.context_key

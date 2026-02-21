@@ -47,12 +47,24 @@ LOGGER = logging.getLogger(__name__)
 
 class PhoneNumberSerializer(serializers.BaseSerializer):  # lint-amnesty, pylint: disable=abstract-method
     """
-    Class to serialize phone number into a digit only representation
+    Class to serialize phone number into a digit only representation.
+
+    This serializer removes all non-numeric characters from the phone number,
+    allowing '+' only at the beginning of the number.
     """
 
     def to_internal_value(self, data):
-        """Remove all non numeric characters in phone number"""
-        return re.sub("[^0-9]", "", data) or None
+        """
+        Remove all non-numeric characters from the phone number.
+
+        Args:
+            data (str): The input phone number string.
+
+        Returns:
+            str or None: The cleaned phone number string containing only digits,
+                with an optional '+' at the beginning.
+        """
+        return re.sub(r'(?!^)\+|[^0-9+]', "", data) or None
 
 
 class LanguageProficiencySerializer(serializers.ModelSerializer):
@@ -87,12 +99,12 @@ class SocialLinkSerializer(serializers.ModelSerializer):
 
     def validate_platform(self, platform):
         """
-        Validate that the platform value is one of (facebook, twitter or linkedin)
+        Validate that the platform value is one of (facebook, x or linkedin)
         """
-        valid_platforms = ["facebook", "twitter", "linkedin"]
+        valid_platforms = ["facebook", "x", "linkedin"]
         if platform not in valid_platforms:
             raise serializers.ValidationError(
-                "The social platform must be facebook, twitter or linkedin"
+                "The social platform must be facebook, x or linkedin"
             )
         return platform
 

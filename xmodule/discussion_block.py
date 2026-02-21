@@ -4,8 +4,9 @@ Discussion XBlock
 
 import logging
 import urllib
-
+from django.conf import settings
 from django.contrib.staticfiles.storage import staticfiles_storage
+from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils.translation import get_language_bidi
 from web_fragments.fragment import Fragment
@@ -14,16 +15,14 @@ from xblock.core import XBlock
 from xblock.fields import UNIQUE_ID, Scope, String
 from xblock.utils.resources import ResourceLoader
 from xblock.utils.studio_editable import StudioEditableXBlockMixin
+from xblocks_contrib.discussion import DiscussionXBlock as _ExtractedDiscussionXBlock
 
-from lms.djangoapps.discussion.django_comment_client.permissions import has_permission
-from openedx.core.djangoapps.discussions.models import DiscussionsConfiguration, Provider
 from openedx.core.djangolib.markup import HTML, Text
 from openedx.core.lib.xblock_utils import get_css_dependencies, get_js_dependencies
 from xmodule.xml_block import XmlMixin
 
-
 log = logging.getLogger(__name__)
-loader = ResourceLoader(__name__)  # pylint: disable=invalid-name
+loader = ResourceLoader("lms")  # pylint: disable=invalid-name
 
 
 def _(text):
@@ -36,10 +35,13 @@ def _(text):
 @XBlock.needs('user')  # pylint: disable=abstract-method
 @XBlock.needs('i18n')
 @XBlock.needs('mako')
-class DiscussionXBlock(XBlock, StudioEditableXBlockMixin, XmlMixin):  # lint-amnesty, pylint: disable=abstract-method
+@XBlock.wants('discussion_config_service')
+class _BuiltInDiscussionXBlock(XBlock, StudioEditableXBlockMixin,
+                               XmlMixin):  # lint-amnesty, pylint: disable=abstract-method
     """
     Provides a discussion forum that is inline with other content in the courseware.
     """
+    is_extracted = False
     completion_mode = XBlockCompletionMode.EXCLUDED
 
     discussion_id = String(scope=Scope.settings, default=UNIQUE_ID)
@@ -74,6 +76,13 @@ class DiscussionXBlock(XBlock, StudioEditableXBlockMixin, XmlMixin):  # lint-amn
     has_author_view = True  # Tells Studio to use author_view
 
     @property
+    def discussion_config_service(self):
+        """
+        Returns discussion configuration service.
+        """
+        return self.runtime.service(self, 'discussion_config_service')
+
+    @property
     def course_key(self):
         return getattr(self.scope_ids.usage_id, 'course_key', None)
 
@@ -82,8 +91,18 @@ class DiscussionXBlock(XBlock, StudioEditableXBlockMixin, XmlMixin):  # lint-amn
         """
         Discussion Xblock does not support new OPEN_EDX provider
         """
-        provider = DiscussionsConfiguration.get(self.course_key)
-        return provider.provider_type == Provider.LEGACY
+        if self.discussion_config_service:
+            return self.discussion_config_service.is_discussion_visible(self.course_key)
+        return False
+
+    @property
+    def is_discussion_enabled(self):
+        """
+        Returns True if discussions are enabled; else False
+        """
+        if self.discussion_config_service:
+            return self.discussion_config_service.is_discussion_enabled()
+        return False
 
     @property
     def django_user(self):
@@ -156,15 +175,14 @@ class DiscussionXBlock(XBlock, StudioEditableXBlockMixin, XmlMixin):  # lint-amn
         :param str permission: Permission
         :rtype: bool
         """
-        return has_permission(self.django_user, permission, self.course_key)
+        if self.discussion_config_service:
+            return self.discussion_config_service.has_permission(self.django_user, permission, self.course_key)
+        return False
 
     def student_view(self, context=None):
         """
         Renders student view for LMS.
         """
-        # to prevent a circular import issue
-        import lms.djangoapps.discussion.django_comment_client.utils as utils
-
         fragment = Fragment()
 
         if not self.is_visible:
@@ -190,7 +208,7 @@ class DiscussionXBlock(XBlock, StudioEditableXBlockMixin, XmlMixin):  # lint-amn
                     url='{}?{}'.format(reverse('register_user'), qs),
                 ),
             )
-        if utils.is_discussion_enabled(self.course_key):
+        if self.is_discussion_enabled:
             context = {
                 'discussion_id': self.discussion_id,
                 'display_name': self.display_name if self.display_name else _("Discussion"),
@@ -202,9 +220,11 @@ class DiscussionXBlock(XBlock, StudioEditableXBlockMixin, XmlMixin):  # lint-amn
                 'can_create_comment': self.has_permission("create_comment"),
                 'can_create_subcomment': self.has_permission("create_sub_comment"),
                 'login_msg': login_msg,
+                'PLATFORM_NAME': settings.PLATFORM_NAME,
+                'enable_discussion_home_panel': settings.FEATURES.get("ENABLE_DISCUSSION_HOME_PANEL", False),
             }
             fragment.add_content(
-                self.runtime.service(self, 'mako').render_lms_template('discussion/_discussion_inline.html', context)
+                render_to_string('discussion/_discussion_inline.html', context)
             )
 
         fragment.initialize_js('DiscussionInlineBlock')
@@ -217,13 +237,13 @@ class DiscussionXBlock(XBlock, StudioEditableXBlockMixin, XmlMixin):  # lint-amn
         """
         fragment = Fragment()
         # For historic reasons, this template is in the LMS templates folder:
-        fragment.add_content(self.runtime.service(self, 'mako').render_lms_template(
-            'discussion/_discussion_inline_studio.html',
-            {
-                'discussion_id': self.discussion_id,
-                'is_visible': self.is_visible,
-            }
-        ))
+        context = {
+            'discussion_id': self.discussion_id,
+            'is_visible': self.is_visible,
+        }
+        fragment.add_content(
+            loader.render_django_template('templates/discussion/_discussion_inline_studio.html', context)
+        )
         return fragment
 
     def student_view_data(self):
@@ -275,3 +295,19 @@ class DiscussionXBlock(XBlock, StudioEditableXBlockMixin, XmlMixin):  # lint-amn
         for field_name, value in metadata.items():
             if field_name in block.fields:
                 setattr(block, field_name, value)
+
+
+DiscussionXBlock = None
+
+
+def reset_class():
+    """Reset class as per django settings flag"""
+    global DiscussionXBlock
+    DiscussionXBlock = (
+        _ExtractedDiscussionXBlock if settings.USE_EXTRACTED_DISCUSSION_BLOCK
+        else _BuiltInDiscussionXBlock
+    )
+    return DiscussionXBlock
+
+reset_class()
+DiscussionXBlock.__name__ = "DiscussionXBlock"

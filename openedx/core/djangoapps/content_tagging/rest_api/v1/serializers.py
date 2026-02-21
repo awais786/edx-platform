@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from rest_framework import serializers, fields
 
-from openedx_tagging.core.tagging.rest_api.v1.serializers import (
+from openedx_tagging.rest_api.v1.serializers import (
+    ObjectTagMinimalSerializer,
     TaxonomyListQueryParamsSerializer,
     TaxonomySerializer,
 )
@@ -94,3 +95,29 @@ class TaxonomyOrgSerializer(TaxonomySerializer):
         model = TaxonomySerializer.Meta.model
         fields = TaxonomySerializer.Meta.fields + ["orgs", "all_orgs"]
         read_only_fields = ["orgs", "all_orgs"]
+
+
+class ObjectTagCopiedMinimalSerializer(ObjectTagMinimalSerializer):
+    """
+    Serializer for Object Tags.
+
+    This override `get_can_delete_objecttag` to avoid delete
+    object tags if is copied.
+    """
+
+    is_copied = serializers.BooleanField(read_only=True)
+
+    class Meta(ObjectTagMinimalSerializer.Meta):
+        fields = ObjectTagMinimalSerializer.Meta.fields + ["is_copied"]
+
+    def get_can_delete_objecttag(self, instance):
+        """
+        Verify if the user can delete the object tag.
+
+        Override to return `False` if the object tag is copied.
+        """
+        if instance.is_copied:
+            # The user can't delete copied tags.
+            return False
+
+        return super().get_can_delete_objecttag(instance)

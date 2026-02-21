@@ -9,11 +9,11 @@ from datetime import datetime, timedelta, tzinfo
 from tempfile import mkdtemp
 from textwrap import dedent
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 import pytest
 import ddt
 import lxml.etree
-import pytz
 from django.utils.translation import gettext_lazy
 from fs.osfs import OSFS
 from opaque_keys.edx.locator import BlockUsageLocator, CourseLocator
@@ -143,9 +143,22 @@ class RoundTripTestCase(unittest.TestCase):
 
         print("Checking block equality")
         for location in initial_import.modules[course_id].keys():
-            print(("Checking", location))
-            assert blocks_are_equivalent(initial_import.modules[course_id][location],
-                                         second_import.modules[course_id][location])
+            initial_block = initial_import.modules[course_id][location]
+            reimported_block = second_import.modules[course_id][location]
+            if location.block_type == "error":
+                # Error blocks store their stacktrace as a field on the block
+                # itself. We cache failed XBlock tag -> class lookups, so a
+                # PluginError raised from the uncached state vs cached state
+                # will generate different stacktraces, making the two blocks
+                # "different" as far as blocks_are_equivalent() is concerned. It
+                # doesn't *really* matter if the stacktraces are different
+                # though, so we'll do a much less thorough comparison for error
+                # blocks:
+                assert type(initial_block) == type(reimported_block)  # pylint:disable=unidiomatic-typecheck
+                assert initial_block.display_name == reimported_block.display_name
+            else:
+                print(("Checking", location))
+                assert blocks_are_equivalent(initial_block, reimported_block)
 
 
 class TestEdxJsonEncoder(unittest.TestCase):
@@ -183,7 +196,7 @@ class TestEdxJsonEncoder(unittest.TestCase):
         assert '2013-05-03T10:20:30' == self.encoder.default(datetime(2013, 5, 3, 10, 20, 30))
 
     def test_encode_utc_datetime(self):
-        assert '2013-05-03T10:20:30+00:00' == self.encoder.default(datetime(2013, 5, 3, 10, 20, 30, 0, pytz.UTC))
+        assert '2013-05-03T10:20:30+00:00' == self.encoder.default(datetime(2013, 5, 3, 10, 20, 30, 0, ZoneInfo("UTC")))
 
         assert '2013-05-03T10:20:30+04:00' == self.encoder.default(datetime(2013, 5, 3, 10, 20, 30, 0, self.offset_tz))
 

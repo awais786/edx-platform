@@ -6,9 +6,10 @@ from .course_details import CourseDetailsSerializer
 from .course_index import CourseIndexSerializer
 from .course_rerun import CourseRerunSerializer
 from .course_team import CourseTeamSerializer
+from .course_waffle_flags import CourseWaffleFlagsSerializer
 from .grading import CourseGradingModelSerializer, CourseGradingSerializer
 from .group_configurations import CourseGroupConfigurationsSerializer
-from .home import CourseHomeSerializer, CourseHomeTabSerializer, LibraryTabSerializer
+from .home import StudioHomeSerializer, CourseHomeTabSerializer, LibraryTabSerializer
 from .proctoring import (
     LimitedProctoredExamSettingsSerializer,
     ProctoredExamConfigurationSerializer,
@@ -17,7 +18,7 @@ from .proctoring import (
 )
 from .settings import CourseSettingsSerializer
 from .textbooks import CourseTextbooksSerializer
-from .vertical_block import ContainerHandlerSerializer, VerticalContainerSerializer
+from .vertical_block import ContainerHandlerSerializer, ContainerChildrenSerializer
 from .videos import (
     CourseVideosSerializer,
     VideoDownloadSerializer,

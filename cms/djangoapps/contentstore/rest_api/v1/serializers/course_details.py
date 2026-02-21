@@ -10,10 +10,13 @@ from openedx.core.lib.api.serializers import CourseKeyField
 class InstructorInfoSerializer(serializers.Serializer):
     """ Serializer for instructor info """
     name = serializers.CharField(allow_blank=True, required=False)
-    title = serializers.CharField(allow_blank=True, required=False)
+    title = serializers.SerializerMethodField()
     organization = serializers.CharField(allow_blank=True, required=False)
     image = serializers.CharField(allow_blank=True, required=False)
     bio = serializers.CharField(allow_blank=True, required=False)
+
+    def get_title(self, obj):
+        return obj.title() if isinstance(obj, str) else ""
 
 
 class InstructorsSerializer(serializers.Serializer):
@@ -50,6 +53,7 @@ class CourseDetailsSerializer(serializers.Serializer):
     pre_requisite_courses = serializers.ListField(child=CourseKeyField())
     run = serializers.CharField()
     self_paced = serializers.BooleanField()
+    has_changes = serializers.BooleanField()
     short_description = serializers.CharField(allow_blank=True)
     start_date = serializers.DateTimeField()
     subtitle = serializers.CharField(allow_blank=True)

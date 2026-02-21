@@ -2,10 +2,12 @@
 Tests for the Third Party Auth REST API
 """
 
+import urllib
 from unittest.mock import patch
 
 import ddt
-import six
+from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.http import QueryDict
 from django.test.utils import override_settings
 from django.urls import reverse
@@ -36,8 +38,10 @@ LINKED_USERS = (ALICE_USERNAME, STAFF_USERNAME, ADMIN_USERNAME)
 PASSWORD = "edx"
 
 
-def get_mapping_data_by_usernames(usernames):
+def get_mapping_data_by_usernames(usernames, remote_id_field_name=False):
     """ Generate mapping data used in response """
+    if remote_id_field_name:
+        return [{'username': username, 'remote_id': 'external_' + username} for username in usernames]
     return [{'username': username, 'remote_id': 'remote_' + username} for username in usernames]
 
 
@@ -60,7 +64,7 @@ class TpaAPITestCase(ThirdPartyAuthTestMixin, APITestCase):
 
         # Create several users and link each user to Google and TestShib
         for username in LINKED_USERS:
-            make_superuser = (username == ADMIN_USERNAME)
+            make_superuser = username == ADMIN_USERNAME
             make_staff = (username == STAFF_USERNAME) or make_superuser
             user = UserFactory.create(
                 username=username,
@@ -74,11 +78,13 @@ class TpaAPITestCase(ThirdPartyAuthTestMixin, APITestCase):
                 provider=google.backend_name,
                 uid=f'{username}@gmail.com',
             )
-            UserSocialAuth.objects.create(
+            usa = UserSocialAuth.objects.create(
                 user=user,
                 provider=testshib.backend_name,
                 uid=f'{testshib.slug}:remote_{username}',
             )
+            usa.set_extra_data({'external_user_id': f'external_{username}'})
+            usa.refresh_from_db()
         # Create another user not linked to any providers:
         UserFactory.create(username=CARL_USERNAME, email=f'{CARL_USERNAME}@example.com', password=PASSWORD)
 
@@ -213,14 +219,49 @@ class UserViewV2APITests(UserViewsMixin, TpaAPITestCase):
     Test the Third Party Auth User REST API
     """
 
-    def make_url(self, identifier):
+    def setUp(self):  # pylint: disable=arguments-differ
+        """ Create users for use in the tests """
+        super().setUp()
+        admin_user = get_user_model().objects.get(username=ADMIN_USERNAME)
+        self.auth_token = f"JWT {generate_jwt(admin_user, is_restricted=False, scopes=None, filters=None)}"
+
+    def make_url(self, params):
         """
         Return the view URL, with the identifier provided
         """
         return '?'.join([
             reverse('third_party_auth_users_api_v2'),
-            six.moves.urllib.parse.urlencode(identifier)
+            urllib.parse.urlencode(params)
         ])
+
+    @ddt.data(
+        ({}, 400, ["Must provide one of ['email', 'username']"]),
+        ({'username': ALICE_USERNAME}, 400, ["Must provide uid"]),
+        (
+            {'username': 'invalid-user', 'uid': f'{ALICE_USERNAME}@gmail.com'},
+            404,
+            {f"Either user invalid-user or social auth record {ALICE_USERNAME}@gmail.com does not exist."}
+        ),
+        (
+            {'username': ALICE_USERNAME, 'uid': 'invalid-uid'},
+            404,
+            {f"Either user {ALICE_USERNAME} or social auth record invalid-uid does not exist."}
+        ),
+        ({'username': ALICE_USERNAME, 'uid': f'{ALICE_USERNAME}@gmail.com'}, 204, None),
+    )
+    @ddt.unpack
+    def test_delete_social_auth_record(self, identifier, expect_code, expect_data):
+        url = self.make_url(identifier)
+        response = self.client.delete(url, HTTP_AUTHORIZATION=self.auth_token)
+        assert response.status_code == expect_code
+        assert (response.data == expect_data)
+
+    def test_unauthorized_delete_social_auth_record_call(self):
+        user = get_user_model().objects.get(username=CARL_USERNAME)
+        auth_token = f"JWT {generate_jwt(user, is_restricted=False, scopes=None, filters=None)}"
+        url = self.make_url({'username': ALICE_USERNAME, 'uid': f'{ALICE_USERNAME}@gmail.com'})
+        response = self.client.delete(url, HTTP_AUTHORIZATION=auth_token)
+        assert response.status_code == 403
 
 
 @override_settings(EDX_API_KEY=VALID_API_KEY)
@@ -267,12 +308,20 @@ class UserMappingViewAPITests(TpaAPITestCase):
     @ddt.data(
         ({'username': [ALICE_USERNAME, STAFF_USERNAME]}, 200,
          get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME])),
+        ({'username': [ALICE_USERNAME, STAFF_USERNAME], 'remote_id_field_name': 'external_user_id'}, 200,
+         get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME], remote_id_field_name=True)),
         ({'remote_id': ['remote_' + ALICE_USERNAME, 'remote_' + STAFF_USERNAME, 'remote_' + CARL_USERNAME]}, 200,
          get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME])),
+        ({'remote_id': ['remote_' + ALICE_USERNAME, 'remote_' + STAFF_USERNAME, 'remote_' + CARL_USERNAME],
+          'remote_id_field_name': 'external_user_id'}, 200,
+         get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME], remote_id_field_name=True)),
         ({'username': [ALICE_USERNAME, CARL_USERNAME, STAFF_USERNAME]}, 200,
          get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME])),
         ({'username': [ALICE_USERNAME], 'remote_id': ['remote_' + STAFF_USERNAME]}, 200,
          get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME])),
+        ({'username': [ALICE_USERNAME], 'remote_id': ['remote_' + STAFF_USERNAME],
+          'remote_id_field_name': 'external_user_id'}, 200,
+         get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME], remote_id_field_name=True)),
     )
     @ddt.unpack
     def test_user_mappings_with_query_params_comma_separated(self, query_params, expect_code, expect_data):
@@ -284,6 +333,8 @@ class UserMappingViewAPITests(TpaAPITestCase):
         for attr in ['username', 'remote_id']:
             if attr in query_params:
                 params.append('{}={}'.format(attr, ','.join(query_params[attr])))
+        if 'remote_id_field_name' in query_params:
+            params.append('remote_id_field_name={}'.format(query_params['remote_id_field_name']))
         url = "{}?{}".format(base_url, '&'.join(params))
         response = self.client.get(url, HTTP_X_EDX_API_KEY=VALID_API_KEY)
         self._verify_response(response, expect_code, expect_data)
@@ -291,12 +342,20 @@ class UserMappingViewAPITests(TpaAPITestCase):
     @ddt.data(
         ({'username': [ALICE_USERNAME, STAFF_USERNAME]}, 200,
          get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME])),
+        ({'username': [ALICE_USERNAME, STAFF_USERNAME], 'remote_id_field_name': 'external_user_id'}, 200,
+         get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME], remote_id_field_name=True)),
         ({'remote_id': ['remote_' + ALICE_USERNAME, 'remote_' + STAFF_USERNAME, 'remote_' + CARL_USERNAME]}, 200,
          get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME])),
+        ({'remote_id': ['remote_' + ALICE_USERNAME, 'remote_' + STAFF_USERNAME, 'remote_' + CARL_USERNAME],
+          'remote_id_field_name': 'external_user_id'}, 200,
+         get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME], remote_id_field_name=True)),
         ({'username': [ALICE_USERNAME, CARL_USERNAME, STAFF_USERNAME]}, 200,
          get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME])),
         ({'username': [ALICE_USERNAME], 'remote_id': ['remote_' + STAFF_USERNAME]}, 200,
          get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME])),
+        ({'username': [ALICE_USERNAME], 'remote_id': ['remote_' + STAFF_USERNAME],
+          'remote_id_field_name': 'external_user_id'}, 200,
+         get_mapping_data_by_usernames([ALICE_USERNAME, STAFF_USERNAME], remote_id_field_name=True)),
     )
     @ddt.unpack
     def test_user_mappings_with_query_params_multi_value_key(self, query_params, expect_code, expect_data):
@@ -308,6 +367,8 @@ class UserMappingViewAPITests(TpaAPITestCase):
         for attr in ['username', 'remote_id']:
             if attr in query_params:
                 params.setlist(attr, query_params[attr])
+        if 'remote_id_field_name' in query_params:
+            params['remote_id_field_name'] = query_params['remote_id_field_name']
         url = f"{base_url}?{params.urlencode()}"
         response = self.client.get(url, HTTP_X_EDX_API_KEY=VALID_API_KEY)
         self._verify_response(response, expect_code, expect_data)
@@ -377,11 +438,12 @@ class TestThirdPartyAuthUserStatusView(ThirdPartyAuthTestMixin, APITestCase):
         """
         self.client.login(username=self.user.username, password=PASSWORD)
         response = self.client.get(self.url, content_type="application/json")
+        next_url = urllib.parse.quote(settings.ACCOUNT_MICROFRONTEND_URL, safe="")
         assert response.status_code == 200
         assert (response.data ==
                [{
                    'accepts_logins': True, 'name': 'Google',
-                   'disconnect_url': '/auth/disconnect/google-oauth2/?',
-                   'connect_url': '/auth/login/google-oauth2/?auth_entry=account_settings&next=%2Faccount%2Fsettings',
+                   'disconnect_url': '/auth/disconnect_json/google-oauth2/?',
+                   'connect_url': f'/auth/login/google-oauth2/?auth_entry=account_settings&next={next_url}',
                    'connected': False, 'id': 'oa2-google-oauth2'
                }])

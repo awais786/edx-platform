@@ -11,19 +11,20 @@ import logging
 from datetime import datetime
 from functools import reduce
 from django.conf import settings
+from zoneinfo import ZoneInfo
 
 from edx_django_utils.monitoring import set_custom_attribute
 from lxml import etree
 from opaque_keys.edx.keys import UsageKey
-from pytz import UTC
 from web_fragments.fragment import Fragment
 from xblock.completable import XBlockCompletionMode
 from xblock.core import XBlock
 from xblock.exceptions import NoSuchServiceError
-from xblock.fields import Boolean, Integer, List, Scope, String
+from xblock.fields import Boolean, Date, Integer, List, Scope, String
+from xblock.progress import Progress
 
-from edx_toggles.toggles import WaffleFlag, SettingDictToggle
-from xmodule.util.builtin_assets import add_webpack_js_to_fragment, add_sass_to_fragment
+from edx_toggles.toggles import WaffleFlag, SettingToggle
+from xmodule.util.builtin_assets import add_webpack_js_to_fragment, add_css_to_fragment
 from xmodule.x_module import (
     ResourceTemplates,
     shim_xmodule_js,
@@ -35,12 +36,9 @@ from xmodule.x_module import (
 from common.djangoapps.xblock_django.constants import ATTR_KEY_USER_ID, ATTR_KEY_USER_IS_STAFF
 
 from .exceptions import NotFoundError
-from .fields import Date
 from .mako_block import MakoTemplateBlockBase
-from .progress import Progress
 from .x_module import AUTHOR_VIEW, PUBLIC_VIEW
 from .xml_block import XmlMixin
-
 
 log = logging.getLogger(__name__)
 
@@ -56,14 +54,14 @@ TIMED_EXAM_GATING_WAFFLE_FLAG = WaffleFlag(  # lint-amnesty, pylint: disable=tog
     'xmodule.rev_1377_rollout', __name__
 )
 
-# .. toggle_name: FEATURES['SHOW_PROGRESS_BAR']
-# .. toggle_implementation: SettingDictToggle
+# .. toggle_name: SHOW_PROGRESS_BAR
+# .. toggle_implementation: SettingToggle
 # .. toggle_default: False
 # .. toggle_description: Set to True to show progress bar.
 # .. toggle_use_cases: open_edx
 # .. toggle_creation_date: 2022-02-09
 # .. toggle_target_removal_date: None
-SHOW_PROGRESS_BAR = SettingDictToggle("FEATURES", "SHOW_PROGRESS_BAR", default=False, module_name=__name__)
+SHOW_PROGRESS_BAR = SettingToggle("SHOW_PROGRESS_BAR", default=False, module_name=__name__)
 
 
 class SequenceFields:  # lint-amnesty, pylint: disable=missing-class-docstring
@@ -395,7 +393,7 @@ class SequenceBlock(
         return (
             not date or
             not hide_after_date or
-            datetime.now(UTC) < date
+            datetime.now(ZoneInfo("UTC")) < date
         )
 
     def gate_entire_sequence_if_it_is_a_timed_exam_and_contains_content_type_gated_problems(self):
@@ -459,7 +457,7 @@ class SequenceBlock(
                 banner_text, special_html = special_html_view
                 if special_html and not masquerading_as_specific_student:
                     fragment = Fragment(special_html)
-                    add_sass_to_fragment(fragment, 'SequenceBlockDisplay.scss')
+                    add_css_to_fragment(fragment, 'SequenceBlockDisplay.css')
                     add_webpack_js_to_fragment(fragment, 'SequenceBlockDisplay')
                     shim_xmodule_js(fragment, 'Sequence')
                     return fragment
@@ -557,7 +555,19 @@ class SequenceBlock(
                 'This section is a prerequisite. You must complete this section in order to unlock additional content.'
             )
 
-        blocks = self._render_student_view_for_blocks(context, children, fragment, view) if prereq_met else []
+        if prereq_met:
+            blocks = self._render_student_view_for_blocks(context, children, fragment, view)
+        else:
+            blocks = []
+            for child in children:
+                usage_id = child.scope_ids.usage_id
+                blocks.append({
+                    'id': str(usage_id),
+                    'type': child.scope_ids.block_type,
+                    'display_name': child.display_name_with_default,
+                    'is_gated': True,  # Mark as blocked
+                    'content': '',  # Real content not included
+                })
 
         params = {
             'items': blocks,
@@ -601,7 +611,7 @@ class SequenceBlock(
         self._capture_full_seq_item_metrics(children)
         self._capture_current_unit_metrics(children)
 
-        add_sass_to_fragment(fragment, 'SequenceBlockDisplay.scss')
+        add_css_to_fragment(fragment, 'SequenceBlockDisplay.css')
         add_webpack_js_to_fragment(fragment, 'SequenceBlockDisplay')
         shim_xmodule_js(fragment, 'Sequence')
         return fragment

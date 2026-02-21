@@ -6,7 +6,6 @@ Common MongoDB connection functions.
 import logging
 
 import pymongo
-from mongodb_proxy import MongoProxy
 from pymongo.read_preferences import (  # lint-amnesty, pylint: disable=unused-import
     ReadPreference,
     _MONGOS_MODES,
@@ -23,15 +22,18 @@ MONGO_READ_PREFERENCE_MAP = dict(zip(_MONGOS_MODES, _MODES))
 def connect_to_mongodb(
     db, host,
     port=27017, tz_aware=True, user=None, password=None,
-    retry_wait_time=0.1, proxy=True, **kwargs
+    retry_reads=True, **kwargs
 ):
     """
     Returns a MongoDB Database connection, optionally wrapped in a proxy. The proxy
     handles AutoReconnect errors by retrying read operations, since these exceptions
     typically indicate a temporary step-down condition for MongoDB.
     """
-    # If the MongoDB server uses a separate authentication database that should be specified here
-    auth_source = kwargs.get('authsource', '') or None
+    # If the MongoDB server uses a separate authentication database that should be specified here.
+    # Convert the lowercased authsource parameter to the camel-cased authSource expected by MongoClient.
+    auth_source = db
+    if auth_source_key := {'authSource', 'authsource'}.intersection(set(kwargs.keys())):
+        auth_source = kwargs.pop(auth_source_key.pop()) or db
 
     # sanitize a kwarg which may be present and is no longer expected
     # AED 2020-03-02 TODO: Remove this when 'auth_source' will no longer exist in kwargs
@@ -51,27 +53,23 @@ def connect_to_mongodb(
         if read_preference is not None:
             kwargs['read_preference'] = read_preference
 
-    mongo_conn = pymongo.database.Database(
-        pymongo.MongoClient(
-            host=host,
-            port=port,
-            tz_aware=tz_aware,
-            document_class=dict,
-            **kwargs
-        ),
-        db
-    )
+    if 'replicaSet' in kwargs and kwargs['replicaSet'] == '':
+        kwargs['replicaSet'] = None
 
-    if proxy:
-        mongo_conn = MongoProxy(
-            mongo_conn,
-            wait_time=retry_wait_time
-        )
-    # If credentials were provided, authenticate the user.
-    if user is not None and password is not None:
-        mongo_conn.authenticate(user, password, source=auth_source)
+    connection_params = {
+        'host': host,
+        'port': port,
+        'tz_aware': tz_aware,
+        'document_class': dict,
+        'retryReads': retry_reads,
+        **kwargs,
+    }
 
-    return mongo_conn
+    if user is not None and password is not None and not db.startswith('test_'):
+        connection_params.update({'username': user, 'password': password, 'authSource': auth_source})
+
+    mongo_conn = pymongo.MongoClient(**connection_params)
+    return mongo_conn[db]
 
 
 def create_collection_index(

@@ -18,6 +18,7 @@ import openedx.core.djangoapps.debug.views
 import openedx.core.djangoapps.lang_pref.views
 from cms.djangoapps.contentstore import toggles
 from cms.djangoapps.contentstore import views as contentstore_views
+from cms.djangoapps.contentstore.views.block import xblock_edit_view
 from cms.djangoapps.contentstore.views.organization import OrganizationListView
 from openedx.core.apidocs import api_info
 from openedx.core.djangoapps.password_policy import compliance as password_policy_compliance
@@ -123,6 +124,8 @@ urlpatterns = oauth2_urlpatterns + [
             name='course_rerun_handler'),
     re_path(fr'^container/{settings.USAGE_KEY_PATTERN}$', contentstore_views.container_handler,
             name='container_handler'),
+    re_path(fr'^container_embed/{settings.USAGE_KEY_PATTERN}$', contentstore_views.container_embed_handler,
+            name='container_embed_handler'),
     re_path(fr'^orphan/{settings.COURSE_KEY_PATTERN}$', contentstore_views.orphan_handler,
             name='orphan_handler'),
     re_path(fr'^assets/{settings.COURSE_KEY_PATTERN}/{settings.ASSET_KEY_PATTERN}?$',
@@ -138,6 +141,8 @@ urlpatterns = oauth2_urlpatterns + [
     # rest api for course import/export
     path('api/courses/', include('cms.djangoapps.contentstore.api.urls', namespace='courses_api')
          ),
+    path('api/modulestore_migrator/',
+         include('cms.djangoapps.modulestore_migrator.rest_api.urls', namespace='modulestore_migrator_api')),
     re_path(fr'^export/{COURSELIKE_KEY_PATTERN}$', contentstore_views.export_handler,
             name='export_handler'),
     re_path(fr'^export_output/{COURSELIKE_KEY_PATTERN}$', contentstore_views.export_output_handler,
@@ -148,6 +153,8 @@ urlpatterns = oauth2_urlpatterns + [
             name='xblock_outline_handler'),
     re_path(fr'^xblock/container/{settings.USAGE_KEY_PATTERN}$', contentstore_views.xblock_container_handler,
             name='xblock_container_handler'),
+    re_path(fr'^xblock/{settings.USAGE_KEY_PATTERN}/action/edit$', xblock_edit_view,
+            name='xblock_edit_handler'),
     re_path(fr'^xblock/{settings.USAGE_KEY_PATTERN}/(?P<view_name>[^/]+)$', contentstore_views.xblock_view_handler,
             name='xblock_view_handler'),
     re_path(fr'^xblock/{settings.USAGE_KEY_PATTERN}?$', contentstore_views.xblock_handler,
@@ -166,7 +173,7 @@ urlpatterns = oauth2_urlpatterns + [
             contentstore_views.textbooks_detail_handler, name='textbooks_detail_handler'),
     re_path(fr'^videos/{settings.COURSE_KEY_PATTERN}(?:/(?P<edx_video_id>[-\w]+))?$',
             contentstore_views.videos_handler, name='videos_handler'),
-    re_path(fr'^generate_video_upload_link/{settings.COURSE_KEY_PATTERN}',
+    re_path(fr'^generate_video_upload_link/{settings.COURSE_KEY_PATTERN}$',
             contentstore_views.generate_video_upload_link_handler, name='generate_video_upload_link'),
     re_path(fr'^video_images/{settings.COURSE_KEY_PATTERN}(?:/(?P<edx_video_id>[-\w]+))?$',
             contentstore_views.video_images_handler, name='video_images_handler'),
@@ -196,6 +203,9 @@ urlpatterns = oauth2_urlpatterns + [
     path('accessibility', contentstore_views.accessibility, name='accessibility'),
     re_path(fr'api/youtube/courses/{COURSELIKE_KEY_PATTERN}/edx-video-ids$',
             contentstore_views.get_course_youtube_edx_videos_ids, name='youtube_edx_video_ids'),
+    re_path(fr'^api/courses/{settings.COURSE_KEY_PATTERN}/bulk_enable_disable_discussions$',
+            contentstore_views.bulk_enable_disable_discussions,
+            name='bulk_enable_disable_discussions'),
 ]
 
 if not settings.DISABLE_DEPRECATED_SIGNIN_URL:
@@ -220,7 +230,7 @@ urlpatterns += [
     path('openassessment/fileupload/', include('openassessment.fileupload.urls')),
 ]
 
-if settings.FEATURES.get('ENABLE_CONTENT_LIBRARIES'):
+if toggles.ENABLE_CONTENT_LIBRARIES:
     urlpatterns += [
         re_path(fr'^library/{LIBRARY_KEY_PATTERN}?$',
                 contentstore_views.library_handler, name='library_handler'),
@@ -256,26 +266,24 @@ if core_toggles.ENTRANCE_EXAMS.is_enabled():
 # Enable Web/HTML Certificates
 if settings.FEATURES.get('CERTIFICATES_HTML_VIEW'):
     from cms.djangoapps.contentstore.views.certificates import (
-        certificate_activation_handler,
+        CertificateActivationAPIView,
+        CertificateDetailAPIView,
+        certificates_list_handler,
         signatory_detail_handler,
-        certificates_detail_handler,
-        certificates_list_handler
     )
 
     urlpatterns += [
         re_path(fr'^certificates/activation/{settings.COURSE_KEY_PATTERN}/',
-                certificate_activation_handler,
+                CertificateActivationAPIView.as_view(),
                 name='certificate_activation_handler'),
         re_path(r'^certificates/{}/(?P<certificate_id>\d+)/signatories/(?P<signatory_id>\d+)?$'.format(
             settings.COURSE_KEY_PATTERN), signatory_detail_handler, name='signatory_detail_handler'),
         re_path(fr'^certificates/{settings.COURSE_KEY_PATTERN}/(?P<certificate_id>\d+)?$',
-                certificates_detail_handler, name='certificates_detail_handler'),
+                CertificateDetailAPIView.as_view(), name='certificates_detail_handler'),
         re_path(fr'^certificates/{settings.COURSE_KEY_PATTERN}$',
                 certificates_list_handler, name='certificates_list_handler')
     ]
 
-# Maintenance Dashboard
-urlpatterns.append(path('maintenance/', include('cms.djangoapps.maintenance.urls', namespace='maintenance')))
 
 if settings.DEBUG:
     try:

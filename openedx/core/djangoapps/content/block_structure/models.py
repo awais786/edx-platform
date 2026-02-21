@@ -13,10 +13,10 @@ from django.core.exceptions import SuspiciousOperation
 from django.core.files.base import ContentFile
 from django.db import models, transaction
 
+from common.djangoapps.util.storage import resolve_storage_backend
 from model_utils.models import TimeStampedModel
 
 from openedx.core.djangoapps.xmodule_django.models import UsageKeyWithRunField
-from openedx.core.storage import get_storage
 
 from . import config
 from .exceptions import BlockStructureNotFound
@@ -41,8 +41,7 @@ def _directory_name(data_usage_key):
     # .. setting_description: Specifies the path in storage where block structures would be saved,
     #   for storage-backed block structure cache.
     #   For more information, check https://github.com/openedx/edx-platform/pull/14571.
-    # .. setting_warnings: Depends on `BLOCK_STRUCTURES_SETTINGS['STORAGE_CLASS']` and on
-    #   `block_structure.storage_backing_for_cache`.
+    # .. setting_warnings: Depends on `BLOCK_STRUCTURES_SETTINGS['STORAGE_CLASS']`
     directory_prefix = settings.BLOCK_STRUCTURES_SETTINGS.get('DIRECTORY_PREFIX', '')
 
     # replace any '/' in the usage key so they aren't interpreted
@@ -74,19 +73,22 @@ def _bs_model_storage():
     # .. setting_default: None
     # .. setting_description: Specifies the storage used for storage-backed block structure cache.
     #   For more information, check https://github.com/openedx/edx-platform/pull/14571.
-    # .. setting_warnings: Depends on `block_structure.storage_backing_for_cache`.
-    storage_class = settings.BLOCK_STRUCTURES_SETTINGS.get('STORAGE_CLASS')
+    # storage_class = settings.BLOCK_STRUCTURES_SETTINGS.get('STORAGE_CLASS')
 
     # .. setting_name: BLOCK_STRUCTURES_SETTINGS['STORAGE_KWARGS']
     # .. setting_default: {}
     # .. setting_description: Specifies the keyword arguments needed to setup the storage, which
     #   would be used for storage-backed block structure cache.
     #   For more information, check https://github.com/openedx/edx-platform/pull/14571.
-    # .. setting_warnings: Depends on `BLOCK_STRUCTURES_SETTINGS['STORAGE_CLASS']` and on
-    #   `block_structure.storage_backing_for_cache`.
+    # .. setting_warnings: Depends on `BLOCK_STRUCTURES_SETTINGS['STORAGE_CLASS']`
     storage_kwargs = settings.BLOCK_STRUCTURES_SETTINGS.get('STORAGE_KWARGS', {})
 
-    return get_storage(storage_class, **storage_kwargs)
+    return resolve_storage_backend(
+        storage_key="block_structures_settings",
+        legacy_setting_key="BLOCK_STRUCTURES_SETTINGS",
+        legacy_sec_setting_keys=["STORAGE_CLASS"],
+        options=storage_kwargs
+    )
 
 
 class CustomizableFileField(models.FileField):

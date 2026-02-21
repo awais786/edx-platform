@@ -2,6 +2,7 @@ name: Quality checks
 
 on:
   pull_request:
+  merge_group:
   push:
     branches:
       - master
@@ -13,13 +14,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-20.04]
+        os: [ubuntu-24.04]
         python-version:
           - "3.11"
         node-version: [20]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
@@ -30,12 +31,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install libxmlsec1-dev
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
 
@@ -45,11 +46,11 @@ jobs:
       - name: Get pip cache dir
         id: pip-cache-dir
         run: |
-          echo "::set-output name=dir::$(pip cache dir)"
+          echo "dir=$(pip cache dir)" >> $GITHUB_OUTPUT
 
       - name: Cache pip dependencies
         id: cache-dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.pip-cache-dir.outputs.dir }}
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements/edx/testing.txt') }}
@@ -61,18 +62,30 @@ jobs:
         run: |
           make test-requirements
 
+      - name: Install npm
+        env:
+          PIP_SRC: ${{ runner.temp }}
+        run: npm ci
+
+      - name: Install python packages
+        env:
+          PIP_SRC: ${{ runner.temp }}
+        run: |
+            pip install -e .
+
       - name: Run Quality Tests
         env:
-          TEST_SUITE: quality
-          SCRIPT_TO_RUN: ./scripts/generic-ci-tests.sh
           PIP_SRC: ${{ runner.temp }}
           TARGET_BRANCH: ${{ github.base_ref }}
         run: |
-          ./scripts/all-tests.sh
+            make pycodestyle
+            make xsslint
+            make pii_check
+            make check_keywords
 
       - name: Save Job Artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: Build-Artifacts
           path: |

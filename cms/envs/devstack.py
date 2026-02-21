@@ -6,10 +6,14 @@ Specific overrides to the base prod settings to make development easier.
 import logging
 from os.path import abspath, dirname, join
 
+from openedx.core.lib.features_setting_proxy import FeaturesProxy
+
 from .production import *  # pylint: disable=wildcard-import, unused-wildcard-import
 
+FEATURES = FeaturesProxy(globals())
+
 # Don't use S3 in devstack, fall back to filesystem
-del DEFAULT_FILE_STORAGE
+STORAGES['default']['BACKEND'] = 'django.core.files.storage.FileSystemStorage'
 COURSE_IMPORT_EXPORT_STORAGE = 'django.core.files.storage.FileSystemStorage'
 USER_TASKS_ARTIFACT_STORAGE = COURSE_IMPORT_EXPORT_STORAGE
 
@@ -45,19 +49,18 @@ EMAIL_FILE_PATH = '/edx/src/ace_messages/'
 
 LMS_BASE = 'localhost:18000'
 LMS_ROOT_URL = f'http://{LMS_BASE}'
-FEATURES['PREVIEW_LMS_BASE'] = "preview." + LMS_BASE
 
 FRONTEND_REGISTER_URL = LMS_ROOT_URL + '/register'
 
 ################################## Video Pipeline Settings #########################
 
-FEATURES['ENABLE_VIDEO_UPLOAD_PIPELINE'] = True
+ENABLE_VIDEO_UPLOAD_PIPELINE = True
 
 ########################### PIPELINE #################################
 
 # Skip packaging and optimization in development
 PIPELINE['PIPELINE_ENABLED'] = False
-STATICFILES_STORAGE = 'openedx.core.storage.DevelopmentStorage'
+STORAGES['staticfiles']['BACKEND'] = 'openedx.core.storage.DevelopmentStorage'
 
 # Revert to the default set of finders as we don't want the production pipeline
 STATICFILES_FINDERS = [
@@ -65,9 +68,6 @@ STATICFILES_FINDERS = [
     'django.contrib.staticfiles.finders.FileSystemFinder',
     'django.contrib.staticfiles.finders.AppDirectoriesFinder',
 ]
-
-# Load development webpack donfiguration
-WEBPACK_CONFIG_PATH = 'webpack.dev.config.js'
 
 ############################ PYFS XBLOCKS SERVICE #############################
 # Set configuration for Django pyfilesystem
@@ -103,8 +103,12 @@ DEBUG_TOOLBAR_PANELS = (
     'debug_toolbar.panels.request.RequestPanel',
     'debug_toolbar.panels.sql.SQLPanel',
     'debug_toolbar.panels.signals.SignalsPanel',
-    'debug_toolbar.panels.profiling.ProfilingPanel',
+    'debug_toolbar.panels.cache.CachePanel',
     'debug_toolbar.panels.history.HistoryPanel',
+
+    # ProfilingPanel has been intentionally removed for default devstack.py
+    # runtimes for performance reasons.
+    # 'debug_toolbar.panels.profiling.ProfilingPanel',
 )
 
 DEBUG_TOOLBAR_CONFIG = {
@@ -126,7 +130,7 @@ def should_show_debug_toolbar(request):  # lint-amnesty, pylint: disable=missing
 
 
 ################################ MILESTONES ################################
-FEATURES['MILESTONES_APP'] = True
+MILESTONES_APP = True
 
 ########################### ORGANIZATIONS #################################
 # Although production studio.edx.org disables `ORGANIZATIONS_AUTOCREATE`,
@@ -136,16 +140,16 @@ FEATURES['MILESTONES_APP'] = True
 ORGANIZATIONS_AUTOCREATE = True
 
 ################################ ENTRANCE EXAMS ################################
-FEATURES['ENTRANCE_EXAMS'] = True
+ENTRANCE_EXAMS = True
 
 ################################ COURSE LICENSES ################################
-FEATURES['LICENSING'] = True
+LICENSING = True
 # Needed to enable licensing on video blocks
 XBLOCK_SETTINGS.update({'VideoBlock': {'licensing_enabled': True}})
 
 ################################ SEARCH INDEX ################################
-FEATURES['ENABLE_COURSEWARE_INDEX'] = True
-FEATURES['ENABLE_LIBRARY_INDEX'] = False
+ENABLE_COURSEWARE_INDEX = True
+ENABLE_LIBRARY_INDEX = False
 SEARCH_ENGINE = "search.elastic.ElasticSearchEngine"
 
 ELASTIC_SEARCH_CONFIG = [
@@ -157,31 +161,34 @@ ELASTIC_SEARCH_CONFIG = [
 ]
 
 ################################ COURSE DISCUSSIONS ###########################
-FEATURES['ENABLE_DISCUSSION_SERVICE'] = True
+ENABLE_DISCUSSION_SERVICE = True
 
 ################################ CREDENTIALS ###########################
 CREDENTIALS_SERVICE_USERNAME = 'credentials_worker'
 
 ########################## Certificates Web/HTML View #######################
-FEATURES['CERTIFICATES_HTML_VIEW'] = True
+CERTIFICATES_HTML_VIEW = True
 
 ########################## AUTHOR PERMISSION #######################
-FEATURES['ENABLE_CREATOR_GROUP'] = True
+ENABLE_CREATOR_GROUP = True
 
 ########################## Library creation organizations restriction #######################
-FEATURES['ENABLE_ORGANIZATION_STAFF_ACCESS_FOR_CONTENT_LIBRARIES'] = True
+ENABLE_ORGANIZATION_STAFF_ACCESS_FOR_CONTENT_LIBRARIES = True
 
 ################### FRONTEND APPLICATION PUBLISHER URL ###################
-FEATURES['FRONTEND_APP_PUBLISHER_URL'] = 'http://localhost:18400'
-
-################### FRONTEND APPLICATION LIBRARY AUTHORING ###################
-LIBRARY_AUTHORING_MICROFRONTEND_URL = 'http://localhost:3001'
+FRONTEND_APP_PUBLISHER_URL = 'http://localhost:18400'
 
 ################### FRONTEND APPLICATION COURSE AUTHORING ###################
 COURSE_AUTHORING_MICROFRONTEND_URL = 'http://localhost:2001'
 
 ################### FRONTEND APPLICATION DISCUSSIONS ###################
 DISCUSSIONS_MICROFRONTEND_URL = 'http://localhost:2002'
+
+################### FRONTEND APPLICATION ACCOUNT ###################
+ACCOUNT_MICROFRONTEND_URL = 'http://localhost:1997'
+
+################### FRONTEND APPLICATION LEARNING ###################
+LEARNING_MICROFRONTEND_URL = 'http://localhost:2000'
 
 ################### FRONTEND APPLICATION DISCUSSIONS FEEDBACK URL###################
 DISCUSSIONS_MFE_FEEDBACK_URL = None
@@ -249,13 +256,13 @@ MODULESTORE = convert_module_store_setting_if_needed(MODULESTORE)
 SECRET_KEY = '85920908f28904ed733fe576320db18cabd7b6cd'
 
 ############# CORS headers for cross-domain requests #################
-FEATURES['ENABLE_CORS_HEADERS'] = True
+ENABLE_CORS_HEADERS = True
 CORS_ALLOW_CREDENTIALS = True
 CORS_ORIGIN_ALLOW_ALL = True
 
 ################### Special Exams (Proctoring) and Prereqs ###################
-FEATURES['ENABLE_SPECIAL_EXAMS'] = True
-FEATURES['ENABLE_PREREQUISITE_COURSES'] = True
+ENABLE_SPECIAL_EXAMS = True
+ENABLE_PREREQUISITE_COURSES = True
 
 # Used in edx-proctoring for ID generation in lieu of SECRET_KEY - dummy value
 # (ref MST-637)
@@ -267,7 +274,8 @@ WEBPACK_LOADER['DEFAULT']['TIMEOUT'] = 5
 ################ Using LMS SSO for login to Studio ################
 SOCIAL_AUTH_EDX_OAUTH2_KEY = 'studio-sso-key'
 SOCIAL_AUTH_EDX_OAUTH2_SECRET = 'studio-sso-secret'  # in stage, prod would be high-entropy secret
-SOCIAL_AUTH_EDX_OAUTH2_URL_ROOT = 'http://edx.devstack.lms:18000'  # routed internally server-to-server
+# routed internally server-to-server
+SOCIAL_AUTH_EDX_OAUTH2_URL_ROOT = ENV_TOKENS.get('SOCIAL_AUTH_EDX_OAUTH2_URL_ROOT', 'http://edx.devstack.lms:18000')
 SOCIAL_AUTH_EDX_OAUTH2_PUBLIC_URL_ROOT = 'http://localhost:18000'  # used in browser redirect
 
 # Don't form the return redirect URL with HTTPS on devstack
@@ -283,6 +291,9 @@ CREDENTIALS_PUBLIC_SERVICE_URL = 'http://localhost:18150'
 
 ########################## ORA MFE APP ##############################
 ORA_MICROFRONTEND_URL = 'http://localhost:1992'
+
+########################## LEARNER HOME APP ##############################
+LEARNER_HOME_MICROFRONTEND_URL = 'http://localhost:1996'
 
 ############################ AI_TRANSLATIONS ##################################
 AI_TRANSLATIONS_API_URL = 'http://localhost:18760/api/v1'
@@ -346,6 +357,7 @@ SPECTACULAR_SETTINGS = {
     'SCHEMA_PATH_PREFIX_TRIM': '/api/contentstore',
     'SERVERS': [
         {'url': AUTHORING_API_URL, 'description': 'Public'},
-        {'url': f'http://{CMS_BASE}/api/contentstore', 'description': 'Local'}
+        {'url': f'http://{CMS_BASE}', 'description': 'Local'},
+        {'url': f'http://{CMS_BASE}/api/contentstore', 'description': 'CMS-contentstore'}
     ],
 }

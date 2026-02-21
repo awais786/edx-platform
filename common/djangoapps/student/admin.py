@@ -2,6 +2,9 @@
 
 
 from functools import wraps
+from dal_select2.views import Select2ListView
+from dal_select2.widgets import ListSelect2
+from django_countries import countries
 
 from config_models.admin import ConfigurationModelAdmin
 from django import forms
@@ -11,12 +14,14 @@ from django.contrib.admin.sites import NotRegistered
 from django.contrib.admin.utils import unquote
 from django.contrib.auth import get_user_model
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import ReadOnlyPasswordHashField
 from django.contrib.auth.forms import UserChangeForm as BaseUserChangeForm
 from django.db import models, router, transaction
 from django.http import HttpResponseRedirect
 from django.http.request import QueryDict
-from django.urls import reverse
+from django.urls import reverse, path
+from django.utils.decorators import method_decorator
 from django.utils.translation import ngettext
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
@@ -31,6 +36,7 @@ from common.djangoapps.student.models import (
     BulkChangeEnrollmentConfiguration,
     BulkUnenrollConfiguration,
     CourseAccessRole,
+    CourseAccessRoleHistory,
     CourseEnrollment,
     CourseEnrollmentAllowed,
     CourseEnrollmentCelebration,
@@ -45,6 +51,7 @@ from common.djangoapps.student.models import (
     UserProfile,
     UserTestGroup
 )
+from common.djangoapps.student.constants import LANGUAGE_CHOICES
 from common.djangoapps.student.roles import REGISTERED_ACCESS_ROLES
 from xmodule.modulestore.django import modulestore  # lint-amnesty, pylint: disable=wrong-import-order
 
@@ -223,6 +230,131 @@ class CourseAccessRoleAdmin(admin.ModelAdmin):
         super().save_model(request, obj, form, change)
 
 
+@admin.register(CourseAccessRoleHistory)
+class CourseAccessRoleHistoryAdmin(admin.ModelAdmin):
+    """Admin panel for the Course Access Role History."""
+    list_display = (
+        'id', 'user', 'org', 'course_id', 'role', 'action_type', 'changed_by', 'created'
+    )
+    list_filter = (
+        'action_type', 'org', 'role'
+    )
+    search_fields = (
+        'user__username', 'org', 'course_id', 'role', 'action_type', 'changed_by__username'
+    )
+    readonly_fields = (
+        'user', 'org', 'course_id', 'role', 'action_type', 'changed_by', 'created', 'modified'
+    )
+    actions = ['revert_selected_history', 'delete_selected_history_entries']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def revert_selected_history(self, request, queryset):
+        """
+        Admin action to revert selected CourseAccessRoleHistory entries.
+        """
+        if not request.user.has_perm('student.can_revert_course_access_role'):
+            self.message_user(request, "You do not have permission to revert course access roles.", level='ERROR')
+            return
+
+        reverted_count = 0
+        for history_record in queryset:
+            try:
+                with transaction.atomic():
+                    if history_record.action_type == 'created':
+                        CourseAccessRole.objects.filter(
+                            user=history_record.user,
+                            org=history_record.org,
+                            course_id=history_record.course_id,
+                            role=history_record.role
+                        ).delete()
+                        self.message_user(
+                            request, f"Successfully reverted creation of role for "
+                            f"{history_record.user.username} in {history_record.course_id}"
+                        )
+                    elif history_record.action_type == 'updated':
+                        if history_record.old_values:
+                            CourseAccessRole.objects.update_or_create(
+                                user_id=history_record.old_values['user_id'],
+                                org=history_record.old_values['org'],
+                                course_id=history_record.old_values['course_id'],
+                                defaults={'role': history_record.old_values['role']}
+                            )
+                            self.message_user(
+                                request, f"Successfully reverted update of role for "
+                                f"{history_record.user.username} to {history_record.old_values['role']} "
+                                f"in {history_record.course_id}"
+                            )
+                        else:
+                            self.message_user(
+                                request, f"Cannot revert update for record {history_record.id}: "
+                                f"old_values not found.", level='WARNING'
+                            )
+                    elif history_record.action_type == 'deleted':
+                        CourseAccessRole.objects.update_or_create(
+                            user=history_record.user,
+                            org=history_record.org,
+                            course_id=history_record.course_id,
+                            role=history_record.role
+                        )
+                        self.message_user(
+                            request, f"Successfully reverted deletion of role for "
+                            f"{history_record.user.username} in {history_record.course_id}"
+                        )
+                    reverted_count += 1
+            except Exception as e:  # lint-amnesty, pylint: disable=broad-except
+                self.message_user(request, f"Error reverting record {history_record.id}: {e}", level='ERROR')
+
+        if reverted_count > 0:
+            self.message_user(
+                request,
+                ngettext(
+                    "Successfully reverted %(count)d selected history entry.",
+                    "Successfully reverted %(count)d selected history entries.",
+                    reverted_count
+                ) % {'count': reverted_count},
+            )
+    revert_selected_history.short_description = "Revert selected history entries"
+
+    def delete_selected_history_entries(self, request, queryset):
+        """
+        Admin action to delete selected CourseAccessRoleHistory entries.
+        """
+        if not request.user.has_perm('student.can_delete_course_access_role_history'):
+            self.message_user(
+                request, "You do not have permission to delete course access role history entries.",
+                level='ERROR'
+            )
+            return
+
+        deleted_count = 0
+        for history_record in queryset:
+            try:
+                history_record.delete()
+                deleted_count += 1
+            except Exception as e:  # lint-amnesty, pylint: disable=broad-except
+                self.message_user(request, f"Error deleting record {history_record.id}: {e}", level='ERROR')
+
+        if deleted_count > 0:
+            self.message_user(
+                request,
+                ngettext(
+                    "Successfully deleted %(count)d selected history entry.",
+                    "Successfully deleted %(count)d selected history entries.",
+                    deleted_count
+                ) % {'count': deleted_count},
+                level='SUCCESS',
+            )
+    delete_selected_history_entries.short_description = "Delete selected history entries"
+
+
 @admin.register(LinkedInAddToProfileConfiguration)
 class LinkedInAddToProfileConfigurationAdmin(admin.ModelAdmin):
     """Admin interface for the LinkedIn Add to Profile configuration. """
@@ -309,9 +441,81 @@ class CourseEnrollmentAdmin(DisableEnrollmentAdminMixin, admin.ModelAdmin):
         return super().get_queryset(request).select_related('user')  # lint-amnesty, pylint: disable=no-member, super-with-arguments
 
 
+@method_decorator(login_required, name='dispatch')
+class LanguageAutocomplete(Select2ListView):
+    def get_list(self):
+        if not self.request.user.is_staff:
+            return []
+        return [lang for lang in LANGUAGE_CHOICES if self.q.lower() in lang.lower()]
+
+
+@method_decorator(login_required, name='dispatch')
+class CountryAutocomplete(Select2ListView):
+    """
+    Autocomplete view for selecting countries using Select2.
+
+    Only accessible to authenticated staff users. Filters the list of countries
+    based on the user input (query string) and returns matching results.
+    """
+
+    def get_list(self):
+        """
+        Returns a filtered list of country tuples (code, name) based on the query.
+        """
+        if not self.request.user.is_staff:
+            return []
+        results = []
+        for code, name in countries:
+            if self.q.lower() in name.lower():
+                results.append((code, name))
+        return results
+
+    def get_result_label(self, item):
+        """ What the user sees in the dropdown """
+        return dict(countries).get(item, item)
+
+    def get_result_value(self, item):
+        """ What gets sent back on selection (the code) """
+        return item
+
+
+class UserProfileInlineForm(forms.ModelForm):
+    """
+    A custom form for editing the UserProfile model within the admin inline.
+    """
+    language = forms.CharField(
+        required=False,
+        widget=ListSelect2(url='admin:language-autocomplete')  # pylint: disable=no-member
+    )
+    country = forms.CharField(
+        required=False,
+        widget=ListSelect2(url='admin:country-autocomplete')   # pylint: disable=no-member
+    )
+
+    class Meta:
+        model = UserProfile
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        if self.instance and self.instance.pk:
+            if self.instance.country:
+                code = self.instance.country
+                name = countries.name(code) if code in countries else code
+                self.fields['country'].widget.choices = [(code, name)]
+                self.initial['country'] = code
+
+            if self.instance.language:
+                language = self.instance.language
+                self.fields['language'].initial = language
+                self.fields['language'].widget.choices = [(language, language)]
+
+
 class UserProfileInline(admin.StackedInline):
     """ Inline admin interface for UserProfile model. """
     model = UserProfile
+    form = UserProfileInlineForm
     can_delete = False
     verbose_name_plural = _('User profile')
 
@@ -358,6 +562,18 @@ class UserAdmin(BaseUserAdmin):
         if obj:
             return django_readonly + ('username',)
         return django_readonly
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                'language-autocomplete/',
+                LanguageAutocomplete.as_view(),
+                name='language-autocomplete'
+            ),
+            path('country-autocomplete/', CountryAutocomplete.as_view(), name='country-autocomplete'),
+        ]
+        return custom_urls + urls
 
 
 @admin.register(UserAttribute)
